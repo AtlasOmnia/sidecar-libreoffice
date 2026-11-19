@@ -1,0 +1,2724 @@
+[
+  {
+    "name": "calc_get_overview",
+    "description": "List open LibreOffice documents and Calc workbook metadata.",
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_get_range",
+    "description": "Read values, formulas, number formats and a fingerprint; results over 5000 cells are truncated.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sheet": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "address": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "document_id",
+        "sheet",
+        "address"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_set_range",
+    "description": "Write values or formulas as one undo step with optional stale-write protection.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sheet": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "address": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "values": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10000,
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 10000,
+            "items": {
+              "type": [
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ],
+              "minimum": -1.7976931348623157e+308,
+              "maximum": 1.7976931348623157e+308
+            }
+          }
+        },
+        "if_match": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "document_id",
+        "sheet",
+        "address",
+        "values"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_import_csv",
+    "description": "Import CSV text into EMPTY cells of a Calc sheet starting at start_cell, as one undo step. Every field is data, never a formula: text such as '=SUM(A1)' or '+1' stays text. typing 'text' (default) keeps every field as text; 'numbers' turns plain dot-decimal numbers (-12, 3.50, 1e3) into numbers and keeps leading-zero codes, decimal commas, percentages, currency, dates and booleans as text. Empty fields leave empty cells; short rows are padded. Refused before writing when the CSV is malformed, over 10000 cells or 1,000,000 characters, or any destination cell is not empty. Returns counts of text/number/empty cells as read back and 'verified'.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sheet": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "start_cell": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 12
+        },
+        "csv_text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000000
+        },
+        "delimiter": {
+          "type": "string",
+          "enum": [
+            ",",
+            ";",
+            "tab",
+            "|"
+          ]
+        },
+        "typing": {
+          "type": "string",
+          "enum": [
+            "text",
+            "numbers"
+          ]
+        }
+      },
+      "required": [
+        "document_id",
+        "sheet",
+        "start_cell",
+        "csv_text"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_sort_range",
+    "description": "Sort the rows of a Calc range by one to three columns (sheet column letters inside the range), keeping every row together; has_header keeps the first row in place. LibreOffice order: ties keep their order; ascending puts numbers before text, descending text before numbers, and empty cells are last either way; case-insensitive unless case_sensitive. Formulas referring to their own row move with it; if sorting would change what any row shows (formulas referring to other rows), the sort is undone at once and returned with sorted:false. One undo step.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sheet": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "address": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "has_header": {
+          "type": "boolean"
+        },
+        "keys": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "items": {
+            "type": "object",
+            "properties": {
+              "column": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 3
+              },
+              "descending": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "column"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "case_sensitive": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "document_id",
+        "sheet",
+        "address",
+        "keys",
+        "has_header"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_filter_range",
+    "description": "Filter a Calc range: hide the data rows that do not meet the conditions, changing no values (a standard filter; one per sheet). Operators: equals, not_equals (number or text), greater, greater_equal, less, less_equal (number), contains, not_contains, begins_with, ends_with (text), not_empty (no value; there is no 'empty' operator). match 'all' (default) or 'any'. An empty conditions list removes the filter. Returns visible and hidden row numbers as read back. One undo step.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sheet": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "address": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "has_header": {
+          "type": "boolean"
+        },
+        "conditions": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "properties": {
+              "column": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 3
+              },
+              "operator": {
+                "type": "string",
+                "enum": [
+                  "equals",
+                  "not_equals",
+                  "greater",
+                  "greater_equal",
+                  "less",
+                  "less_equal",
+                  "contains",
+                  "not_contains",
+                  "begins_with",
+                  "ends_with",
+                  "not_empty"
+                ]
+              },
+              "value": {
+                "type": [
+                  "string",
+                  "number"
+                ],
+                "maxLength": 1000,
+                "minimum": -1.7976931348623157e+308,
+                "maximum": 1.7976931348623157e+308
+              }
+            },
+            "required": [
+              "column",
+              "operator"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "match": {
+          "type": "string",
+          "enum": [
+            "all",
+            "any"
+          ]
+        }
+      },
+      "required": [
+        "document_id",
+        "sheet",
+        "address",
+        "conditions",
+        "has_header"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_create_chart",
+    "description": "Insert a chart of a Calc range: column, bar (horizontal), line, area, pie or scatter, with its top-left corner at anchor_cell and an optional title. By default the first row and first column of the range are labels and a legend is shown. Pass if_match (the fingerprint from calc_get_range) to refuse a source that changed. Refused before writing when the range holds no numbers. One undo step removes the chart; returns the chart as read back and 'verified'.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sheet": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "address": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "column",
+            "bar",
+            "line",
+            "area",
+            "pie",
+            "scatter"
+          ]
+        },
+        "anchor_cell": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 12
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 255
+        },
+        "width_cm": {
+          "type": "number",
+          "minimum": 2,
+          "maximum": 50
+        },
+        "height_cm": {
+          "type": "number",
+          "minimum": 2,
+          "maximum": 50
+        },
+        "first_row_labels": {
+          "type": "boolean"
+        },
+        "first_column_labels": {
+          "type": "boolean"
+        },
+        "legend": {
+          "type": "boolean"
+        },
+        "if_match": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "document_id",
+        "sheet",
+        "address",
+        "type",
+        "anchor_cell"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_list_charts",
+    "description": "List the charts on a Calc sheet with name, type, title, source ranges, legend and position/size in centimetres (50 max). Read-only.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sheet": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
+      },
+      "required": [
+        "document_id",
+        "sheet"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_get_rules",
+    "description": "Read the rules on a Calc range: its conditional formats (operator, values, style), its data validation (taken from the range as a whole), whether the sheet is protected, and the sheet's frozen columns/rows (null when the document has several windows). Read-only.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sheet": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "address": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "document_id",
+        "sheet",
+        "address"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_add_conditional_format",
+    "description": "Add a conditional format to a Calc range: when a cell meets the condition it takes a built-in cell style (Good, Neutral, Bad, Warning, Error, Accent, Accent 1-3, Note). Operators: greater, greater_equal, less, less_equal, equal, not_equal (value1), between, not_between (value1 and value2) \u2014 values are numbers or text \u2014 or formula, with value1 an expression without '=' such as B2>C2 written for the range's top-left cell. Existing rules are kept. One undo step; returns the range's rules as read back.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sheet": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "address": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "operator": {
+          "type": "string",
+          "enum": [
+            "greater",
+            "greater_equal",
+            "less",
+            "less_equal",
+            "equal",
+            "not_equal",
+            "between",
+            "not_between",
+            "formula"
+          ]
+        },
+        "value1": {
+          "type": [
+            "number",
+            "string"
+          ],
+          "minLength": 1,
+          "maxLength": 1000,
+          "minimum": -1.7976931348623157e+308,
+          "maximum": 1.7976931348623157e+308
+        },
+        "value2": {
+          "type": [
+            "number",
+            "string"
+          ],
+          "minLength": 1,
+          "maxLength": 1000,
+          "minimum": -1.7976931348623157e+308,
+          "maximum": 1.7976931348623157e+308
+        },
+        "style": {
+          "type": "string",
+          "enum": [
+            "Good",
+            "Neutral",
+            "Bad",
+            "Warning",
+            "Error",
+            "Accent",
+            "Accent 1",
+            "Accent 2",
+            "Accent 3",
+            "Note"
+          ]
+        }
+      },
+      "required": [
+        "document_id",
+        "sheet",
+        "address",
+        "operator",
+        "value1",
+        "style"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_set_validation",
+    "description": "Set data validation on a Calc range, replacing any there: type list (items, a dropdown of 1-100 entries), whole_number or decimal (operator between, not_between, greater, greater_equal, less, less_equal, equal with numeric value1/value2), or none to remove it. reject_invalid (default true) refuses other entries with error_message. Existing cell contents are not checked or changed. One undo step; returns the rule as read back.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sheet": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "address": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "list",
+            "whole_number",
+            "decimal",
+            "none"
+          ]
+        },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          }
+        },
+        "operator": {
+          "type": "string",
+          "enum": [
+            "between",
+            "not_between",
+            "greater",
+            "greater_equal",
+            "less",
+            "less_equal",
+            "equal"
+          ]
+        },
+        "value1": {
+          "type": "number",
+          "minimum": -1.7976931348623157e+308,
+          "maximum": 1.7976931348623157e+308
+        },
+        "value2": {
+          "type": "number",
+          "minimum": -1.7976931348623157e+308,
+          "maximum": 1.7976931348623157e+308
+        },
+        "error_message": {
+          "type": "string",
+          "maxLength": 255
+        },
+        "reject_invalid": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "document_id",
+        "sheet",
+        "address",
+        "type"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_freeze_panes",
+    "description": "Freeze the first columns and rows of a Calc sheet so they stay visible while scrolling (0 and 0 unfreezes). Applies to the named document's window, not whichever is in front, and is refused when that document has several windows. The window's current sheet is kept. Bridge undo step restores the previous freeze; returns the freeze as read back.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sheet": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "columns": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        }
+      },
+      "required": [
+        "document_id",
+        "sheet",
+        "columns",
+        "rows"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_protect_sheet",
+    "description": "Protect (protect true) or unprotect a Calc sheet WITHOUT a password, so the user can lift it any time with Tools > Protect Sheet. Passwords are never accepted. A sheet the user protected with a password is never unprotected (changed:false with the reason). Protection stops edits of locked cells in the LibreOffice window; it does not stop this plugin's tools. Bridge undo step.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sheet": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "protect": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "document_id",
+        "sheet",
+        "protect"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_insert_table",
+    "description": "Turn a Calc range whose first row holds distinct column labels into a named table: a LibreOffice database range with filter buttons (filter_buttons, default true) and an optional built-in style (none by default; Default Style, Academic, Box List Blue/Green/Red/Yellow, Elegant, Financial, Simple Grid Columns, Simple Grid Rows, Simple List Shaded). name defaults to Table1, Table2... Refused when the range overlaps another table or a label is missing or repeated; if_match refuses a changed range. One undo step; returns the table as read back.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sheet": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "address": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "style": {
+          "type": "string",
+          "enum": [
+            "none",
+            "Default Style",
+            "Academic",
+            "Box List Blue",
+            "Box List Green",
+            "Box List Red",
+            "Box List Yellow",
+            "Elegant",
+            "Financial",
+            "Simple Grid Columns",
+            "Simple Grid Rows",
+            "Simple List Shaded"
+          ]
+        },
+        "filter_buttons": {
+          "type": "boolean"
+        },
+        "if_match": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "document_id",
+        "sheet",
+        "address"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_activate_sheet",
+    "description": "Show a sheet in the named Calc document's window (refused when the document has several windows). This changes only what the user sees, so there is nothing to undo; returns the previous sheet.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sheet": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
+      },
+      "required": [
+        "document_id",
+        "sheet"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_recalculate",
+    "description": "Recalculate the formulas of a Calc document: all (default) or only those LibreOffice marked as needing it (all: false). Use when automatic calculation is off, which the result reports. Only formula results change, from the current inputs, so there is no undo step.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "all": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "document_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_format_range",
+    "description": "Apply the supported LibreOffice FormatSpec subset.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sheet": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "address": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "format": {
+          "type": "object",
+          "properties": {
+            "bold": {
+              "type": "boolean"
+            },
+            "italic": {
+              "type": "boolean"
+            },
+            "fontColor": {
+              "type": "string"
+            },
+            "fillColor": {
+              "type": "string"
+            },
+            "numberFormat": {
+              "type": "string"
+            },
+            "borders": {
+              "type": "boolean"
+            },
+            "horizontalAlignment": {
+              "type": "string",
+              "enum": [
+                "General",
+                "Left",
+                "Center",
+                "Right",
+                "Fill",
+                "Justify"
+              ]
+            },
+            "verticalAlignment": {
+              "type": "string",
+              "enum": [
+                "Standard",
+                "Top",
+                "Center",
+                "Bottom"
+              ]
+            },
+            "fontName": {
+              "type": "string"
+            },
+            "fontSize": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 409
+            },
+            "underline": {
+              "type": "string",
+              "enum": [
+                "None",
+                "Single",
+                "Double"
+              ]
+            },
+            "wrapText": {
+              "type": "boolean"
+            },
+            "columnAutofit": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "minProperties": 1
+        }
+      },
+      "required": [
+        "document_id",
+        "sheet",
+        "address",
+        "format"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_clear_range",
+    "description": "Clear contents and formats from a Calc range.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sheet": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "address": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "document_id",
+        "sheet",
+        "address"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_create_sheet",
+    "description": "Create a Calc sheet; duplicate names are rejected.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
+      },
+      "required": [
+        "document_id",
+        "name"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_execute_plan",
+    "description": "Submit one bounded WorkbookPlan V1 exactly once (strict LibreOffice subset: reads read_range/summarize_range_stats; operations write_values, write_formula, format_range, create_sheet, plus the LibreOffice extension clear_range; verification range_values_equal, range_formulas_equal, range_number_format_equal, sheet_exists, sentinel_unchanged). The whole plan is validated before any change, executes as one undo step, and is never retried.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "plan": {
+          "type": "object",
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "const": 1
+                },
+                "outcome": {
+                  "const": "inspect"
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                },
+                "reads": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 50,
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "read_range",
+                          "summarize_range_stats"
+                        ]
+                      },
+                      "sheet": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 255
+                      },
+                      "address": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "sheet",
+                      "address"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "version",
+                "outcome",
+                "reason",
+                "reads"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "const": 1
+                },
+                "outcome": {
+                  "const": "execute"
+                },
+                "summary": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2048
+                },
+                "operations": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 30,
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "const": "write_values"
+                          },
+                          "sheet": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 255
+                          },
+                          "address": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64
+                          },
+                          "values": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 10000,
+                            "items": {
+                              "type": "array",
+                              "minItems": 1,
+                              "maxItems": 10000,
+                              "items": {
+                                "type": [
+                                  "string",
+                                  "number",
+                                  "boolean",
+                                  "null"
+                                ],
+                                "minimum": -1.7976931348623157e+308,
+                                "maximum": 1.7976931348623157e+308
+                              }
+                            }
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "sheet",
+                          "address",
+                          "values"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "const": "write_formula"
+                          },
+                          "sheet": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 255
+                          },
+                          "address": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64
+                          },
+                          "formula": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "sheet",
+                          "address",
+                          "formula"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "const": "format_range"
+                          },
+                          "sheet": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 255
+                          },
+                          "address": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64
+                          },
+                          "format": {
+                            "type": "object",
+                            "properties": {
+                              "bold": {
+                                "type": "boolean"
+                              },
+                              "italic": {
+                                "type": "boolean"
+                              },
+                              "fontColor": {
+                                "type": "string"
+                              },
+                              "fillColor": {
+                                "type": "string"
+                              },
+                              "numberFormat": {
+                                "type": "string"
+                              },
+                              "borders": {
+                                "type": "boolean"
+                              },
+                              "horizontalAlignment": {
+                                "type": "string",
+                                "enum": [
+                                  "General",
+                                  "Left",
+                                  "Center",
+                                  "Right",
+                                  "Fill",
+                                  "Justify"
+                                ]
+                              },
+                              "verticalAlignment": {
+                                "type": "string",
+                                "enum": [
+                                  "Standard",
+                                  "Top",
+                                  "Center",
+                                  "Bottom"
+                                ]
+                              },
+                              "fontName": {
+                                "type": "string"
+                              },
+                              "fontSize": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                                "maximum": 409
+                              },
+                              "underline": {
+                                "type": "string",
+                                "enum": [
+                                  "None",
+                                  "Single",
+                                  "Double"
+                                ]
+                              },
+                              "wrapText": {
+                                "type": "boolean"
+                              },
+                              "columnAutofit": {
+                                "type": "boolean"
+                              }
+                            },
+                            "additionalProperties": false,
+                            "minProperties": 1
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "sheet",
+                          "address",
+                          "format"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "const": "clear_range"
+                          },
+                          "sheet": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 255
+                          },
+                          "address": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "sheet",
+                          "address"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "const": "create_sheet"
+                          },
+                          "name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 255
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "name"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                },
+                "verification": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 30,
+                  "items": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "const": "range_values_equal"
+                          },
+                          "sheet": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 255
+                          },
+                          "address": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64
+                          },
+                          "expectedValues": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 10000,
+                            "items": {
+                              "type": "array",
+                              "minItems": 1,
+                              "maxItems": 10000,
+                              "items": {
+                                "type": [
+                                  "string",
+                                  "number",
+                                  "boolean",
+                                  "null"
+                                ],
+                                "minimum": -1.7976931348623157e+308,
+                                "maximum": 1.7976931348623157e+308
+                              }
+                            }
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "sheet",
+                          "address",
+                          "expectedValues"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "const": "range_formulas_equal"
+                          },
+                          "sheet": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 255
+                          },
+                          "address": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64
+                          },
+                          "expectedFormulas": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 10000,
+                            "items": {
+                              "type": "array",
+                              "minItems": 1,
+                              "maxItems": 10000,
+                              "items": {
+                                "type": [
+                                  "string",
+                                  "number",
+                                  "boolean",
+                                  "null"
+                                ],
+                                "minimum": -1.7976931348623157e+308,
+                                "maximum": 1.7976931348623157e+308
+                              }
+                            }
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "sheet",
+                          "address",
+                          "expectedFormulas"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "const": "sentinel_unchanged"
+                          },
+                          "sheet": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 255
+                          },
+                          "address": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64
+                          },
+                          "expected": {
+                            "type": [
+                              "string",
+                              "number",
+                              "boolean",
+                              "null"
+                            ],
+                            "description": "Expected scalar value of the single sentinel cell.",
+                            "minimum": -1.7976931348623157e+308,
+                            "maximum": 1.7976931348623157e+308
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "sheet",
+                          "address",
+                          "expected"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "const": "range_number_format_equal"
+                          },
+                          "sheet": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 255
+                          },
+                          "address": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64
+                          },
+                          "expectedNumberFormat": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "sheet",
+                          "address",
+                          "expectedNumberFormat"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "const": "sheet_exists"
+                          },
+                          "name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 255
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "name"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "version",
+                "outcome",
+                "summary",
+                "operations",
+                "verification"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "const": 1
+                },
+                "outcome": {
+                  "type": "string",
+                  "enum": [
+                    "ask",
+                    "refuse"
+                  ]
+                },
+                "message": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2048
+                }
+              },
+              "required": [
+                "version",
+                "outcome",
+                "message"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "required": [
+        "document_id",
+        "plan"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "writer_get_text",
+    "description": "Read one page of a Writer document's body in order: up to 500 blocks and 50,000 characters, with the cells of any table in 'tables'. 'complete_document' is true only when the whole document was returned. When 'next_offset' is set, call again with 'continuation' to read the next page; if the document changed in between, the call is refused as Stale and the read must restart. Headers, footers, footnotes, frames and comments are not included.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000,
+          "description": "1-based block (paragraph or table) to start at; prefer continuation"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500
+        },
+        "continuation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "The previous page's continuation; refused as Stale if the document changed since"
+        }
+      },
+      "required": [
+        "document_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "writer_insert_text",
+    "description": "Insert bounded text at the start or end of an explicitly bound Writer document as one undo step. Set as_paragraph to true to add the text as its own new paragraph (a real paragraph break, in the same undo step); newlines inside the text then start further paragraphs.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 50000
+        },
+        "position": {
+          "type": "string",
+          "enum": [
+            "start",
+            "end"
+          ]
+        },
+        "as_paragraph": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "document_id",
+        "text",
+        "position"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "writer_insert_paragraphs",
+    "description": "Insert 1-50 paragraphs, each with its own optional paragraph style, at the start, the end, or after one paragraph (by number, with its full text as expected_text so a moved paragraph is refused as Stale). Every style is checked before anything is written; an unknown style changes nothing. A paragraph without a style keeps the style it inherits from its neighbour. All paragraphs are ONE undo step. Returns the new paragraph numbers, their styles as read back, and 'verified'.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "paragraphs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "items": {
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 10000
+              },
+              "style": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 255
+              }
+            },
+            "required": [
+              "text"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "position": {
+          "type": "string",
+          "enum": [
+            "start",
+            "end",
+            "after"
+          ]
+        },
+        "after_paragraph": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "expected_text": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 50000
+        }
+      },
+      "required": [
+        "document_id",
+        "paragraphs",
+        "position"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "impress_list_slides",
+    "description": "List bounded slide titles and text summaries from an explicitly bound Impress document.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "document_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "libreoffice_undo",
+    "description": "Undo the most recent Hermes change(s) in an explicitly bound LibreOffice document (Calc, Writer or Impress), newest first, one bridge undo per step. Undoes only steps titled 'Hermes: ...', never the user's own edits; stops at the first step that is refused or uncertain and reports which steps were undone. The document is brought to the front first because LibreOffice applies undo through the focused window.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "steps": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 1
+        }
+      },
+      "required": [
+        "document_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_rename_sheet",
+    "description": "Rename a Calc sheet; an existing name is rejected. One undo step; the result's 'undoable' says whether LibreOffice recorded it.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sheet": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "new_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
+      },
+      "required": [
+        "document_id",
+        "sheet",
+        "new_name"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_copy_sheet",
+    "description": "Copy a Calc sheet to a new sheet at the end of the same spreadsheet. One undo step; the result's 'undoable' says whether LibreOffice recorded it.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sheet": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "new_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
+      },
+      "required": [
+        "document_id",
+        "sheet",
+        "new_name"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_delete_sheet",
+    "description": "Delete a Calc sheet. The only sheet of a spreadsheet cannot be deleted. One undo step; the result's 'undoable' says whether LibreOffice recorded it.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sheet": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
+      },
+      "required": [
+        "document_id",
+        "sheet"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_find_replace",
+    "description": "Find and replace text in the cells of one Calc sheet. whole_cell matches entire cell contents only. Returns the number of cells replaced. One undo step; the result's 'undoable' says whether LibreOffice recorded it.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sheet": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "search": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "replace": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 1000
+        },
+        "match_case": {
+          "type": "boolean",
+          "default": false
+        },
+        "whole_cell": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "document_id",
+        "sheet",
+        "search",
+        "replace"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_autofill",
+    "description": "Fill a Calc range down or right from its first source_count rows or columns, continuing formulas and series as LibreOffice's fill handle does. address includes the source cells. One undo step; the result's 'undoable' says whether LibreOffice recorded it.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sheet": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "address": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "down",
+            "right"
+          ]
+        },
+        "source_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "default": 1
+        }
+      },
+      "required": [
+        "document_id",
+        "sheet",
+        "address",
+        "direction"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_range_stats",
+    "description": "Compute count, numericCount, sum, average, min, max and blankCount for a Calc range (10,000 cells max). Read-only.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sheet": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "address": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "document_id",
+        "sheet",
+        "address"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_add_comment",
+    "description": "Add a comment to one Calc cell, replacing any comment already on it. One undo step; the result's 'undoable' says whether LibreOffice recorded it.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sheet": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "cell": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        }
+      },
+      "required": [
+        "document_id",
+        "sheet",
+        "cell",
+        "text"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_get_comments",
+    "description": "List the comments on one Calc sheet with their cells (500 max). Read-only.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sheet": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
+      },
+      "required": [
+        "document_id",
+        "sheet"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "calc_clear_comments",
+    "description": "Delete all comments in a Calc range; cell contents are left alone. One undo step; the result's 'undoable' says whether LibreOffice recorded it.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sheet": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "address": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "document_id",
+        "sheet",
+        "address"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "writer_get_structure",
+    "description": "List the blocks of a Writer document with their number, paragraph style, outline level and a short preview (500 per page). Tables appear as type 'table' with their name, size and cell count. Use 'continuation' to read the next page; a changed document is refused as Stale. Read-only.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000,
+          "description": "1-based block (paragraph or table) to start at; prefer continuation"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500
+        },
+        "continuation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "The previous page's continuation; refused as Stale if the document changed since"
+        }
+      },
+      "required": [
+        "document_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "writer_get_table",
+    "description": "Read the cells of one table in a Writer document's body, by its name or its block number from writer_get_structure: up to 2,000 cells per call in row order, 2,000 characters per cell. Use 'next_cell_offset' as cell_offset for more. Read-only.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "table": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "block": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "cell_offset": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000000
+        }
+      },
+      "required": [
+        "document_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "writer_set_paragraph_style",
+    "description": "Apply an existing paragraph style to one paragraph by its number from writer_get_structure. Give the style name as LibreOffice shows it (for example 'Heading 1', 'Body Text', 'Default Paragraph Style') or its internal name as writer_get_structure reports it ('Standard', 'Text body'); Word names such as 'Heading1' or 'Normal' are refused. expected_text, when given, must equal the paragraph's full text or the call is refused as Stale. One undo step; the result's 'undoable' says whether LibreOffice recorded it.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "paragraph": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "style": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "expected_text": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 50000
+        }
+      },
+      "required": [
+        "document_id",
+        "paragraph",
+        "style"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "writer_find_replace",
+    "description": "Find and replace text throughout a Writer document. Returns the number of replacements. One undo step; the result's 'undoable' says whether LibreOffice recorded it.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "search": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "replace": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 1000
+        },
+        "match_case": {
+          "type": "boolean",
+          "default": false
+        },
+        "whole_words": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "document_id",
+        "search",
+        "replace"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "writer_apply_edits",
+    "description": "Apply up to 50 exact, literal text edits as ONE undo step, all or nothing. Every edit is located before anything changes: if any 'find' is missing, appears more than once without an 'occurrence' (1-based, in the order LibreOffice finds it), or overlaps another edit's match, the whole batch is refused and nothing changes. 'match_case' defaults to true. Pass writer_get_text's 'fingerprint' as if_match to refuse a document that changed since it was read. The replacement takes the formatting of the first replaced character. Use writer_find_replace only when every match should change.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "edits": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "items": {
+            "type": "object",
+            "properties": {
+              "find": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000
+              },
+              "replace": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 1000
+              },
+              "occurrence": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10000
+              },
+              "match_case": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "find",
+              "replace"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "if_match": {
+          "type": "string",
+          "minLength": 32,
+          "maxLength": 32
+        }
+      },
+      "required": [
+        "document_id",
+        "edits"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "writer_get_selection",
+    "description": "Read the text currently selected in a Writer document's window. Read-only.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "document_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "writer_replace_selection",
+    "description": "Replace the single current selection of a Writer document with text (or insert at the cursor when nothing is selected). expected_text must equal the selection as last read, or the call is refused as Stale. One undo step; the result's 'undoable' says whether LibreOffice recorded it.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "text": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 50000
+        },
+        "expected_text": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 50000
+        }
+      },
+      "required": [
+        "document_id",
+        "text",
+        "expected_text"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "writer_format_selection",
+    "description": "Apply character formatting to the single text selection in a Writer document: bold, italic, underline, strikethrough, font_name, font_size (points), color and highlight (#RRGGBB, or 'none' to clear the highlight). expected_text must equal the selection as last read or the call is refused as Stale. One undo step. Returns the formatting before and after, as read back, and 'verified'.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "expected_text": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 50000,
+          "description": "the selection exactly as writer_get_selection returned it"
+        },
+        "format": {
+          "type": "object",
+          "properties": {
+            "bold": {
+              "type": "boolean"
+            },
+            "italic": {
+              "type": "boolean"
+            },
+            "underline": {
+              "type": "boolean"
+            },
+            "strikethrough": {
+              "type": "boolean"
+            },
+            "font_name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            },
+            "font_size": {
+              "type": "number",
+              "minimum": 1,
+              "maximum": 409
+            },
+            "color": {
+              "type": "string",
+              "minLength": 7,
+              "maxLength": 7
+            },
+            "highlight": {
+              "type": "string",
+              "minLength": 4,
+              "maxLength": 7
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "document_id",
+        "expected_text",
+        "format"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "writer_get_comments",
+    "description": "List the comments in a Writer document with author, text and the text each one is anchored to (500 max). Read-only.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "document_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "writer_add_comment",
+    "description": "Add a review comment anchored to the single text selection in a Writer document; the selected text itself is kept. expected_text must equal the selection as last read or the call is refused as Stale. author defaults to 'Hermes'. One undo step; returns the comment as read back and 'verified'.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "expected_text": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 50000,
+          "description": "the selection exactly as writer_get_selection returned it"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "author": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
+      },
+      "required": [
+        "document_id",
+        "expected_text",
+        "text"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "impress_get_slide",
+    "description": "Read one Impress slide: its layout number, size, and every shape with its number, type, placeholder role (title or body), text, position and size in centimetres. Read-only.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "slide": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        }
+      },
+      "required": [
+        "document_id",
+        "slide"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "impress_create_slide",
+    "description": "Create an Impress slide after after_slide (default: at the end) with a layout (title, title_content, title_only or blank) and optional title and body text placed in the layout's placeholders. The result's 'undoable' says whether LibreOffice recorded an undo step; if it is false, remove the slide with impress_delete_slide instead of undo.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 10000
+        },
+        "layout": {
+          "type": "string",
+          "enum": [
+            "title",
+            "title_content",
+            "title_only",
+            "blank"
+          ]
+        },
+        "after_slide": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        }
+      },
+      "required": [
+        "document_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "impress_delete_slide",
+    "description": "Delete one Impress slide by number. The only slide of a presentation cannot be deleted. Check the result's 'undoable': if it is false the deletion cannot be undone.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "slide": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        }
+      },
+      "required": [
+        "document_id",
+        "slide"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "impress_set_shape_text",
+    "description": "Replace the whole text of one shape on an Impress slide. Give either shape (a number from impress_get_slide) or placeholder (title or body). The result includes previous_text and 'undoable'.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "slide": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "text": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 10000
+        },
+        "shape": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        },
+        "placeholder": {
+          "type": "string",
+          "enum": [
+            "title",
+            "body"
+          ]
+        }
+      },
+      "required": [
+        "document_id",
+        "slide",
+        "text"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "impress_add_text_box",
+    "description": "Add a text box to an Impress slide at a position and size in centimetres (defaults: x 2, y 4, width 12, height 2). The result's 'undoable' says whether LibreOffice recorded an undo step.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "slide": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 10000
+        },
+        "x_cm": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 200
+        },
+        "y_cm": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 200
+        },
+        "width_cm": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 200
+        },
+        "height_cm": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 200
+        }
+      },
+      "required": [
+        "document_id",
+        "slide",
+        "text"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "impress_find_replace",
+    "description": "Find and replace text in the shapes of one Impress slide, or of every slide when slide is omitted. Returns the number of replacements and 'undoable'.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "search": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "replace": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 1000
+        },
+        "slide": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "match_case": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "document_id",
+        "search",
+        "replace"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "impress_set_slide_layout",
+    "description": "Change the layout of an existing Impress slide: title, title_content, title_two_content, title_only or blank. Placeholders that already hold text are kept even when the new layout has no slot for them, so no text is lost; the result lists the slide's shapes afterwards and 'text_preserved'. One bridge undo step that restores the previous layout.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "slide": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "layout": {
+          "type": "string",
+          "enum": [
+            "title",
+            "title_content",
+            "title_two_content",
+            "title_only",
+            "blank"
+          ]
+        },
+        "expected_title": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 10000,
+          "description": "the slide's title text as last read; if given and different, the call is refused as Stale"
+        }
+      },
+      "required": [
+        "document_id",
+        "slide",
+        "layout"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "impress_format_text",
+    "description": "Format all the text in one shape of an Impress slide (by shape number or placeholder title/body): bold, italic, underline, font_name, font_size (points), color (#RRGGBB). Refused when a property to change is mixed inside the shape, because undo could not restore it exactly. One bridge undo step that restores the previous formatting.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "slide": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "shape": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        },
+        "placeholder": {
+          "type": "string",
+          "enum": [
+            "title",
+            "body"
+          ]
+        },
+        "format": {
+          "type": "object",
+          "properties": {
+            "bold": {
+              "type": "boolean"
+            },
+            "italic": {
+              "type": "boolean"
+            },
+            "underline": {
+              "type": "boolean"
+            },
+            "font_name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            },
+            "font_size": {
+              "type": "number",
+              "minimum": 1,
+              "maximum": 409
+            },
+            "color": {
+              "type": "string",
+              "minLength": 7,
+              "maxLength": 7
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        },
+        "expected_text": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 10000,
+          "description": "the shape's full text as last read with impress_get_slide; if given and different, the call is refused as Stale"
+        },
+        "expected_title": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 10000,
+          "description": "the slide's title text as last read; if given and different, the call is refused as Stale"
+        }
+      },
+      "required": [
+        "document_id",
+        "slide",
+        "format"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "impress_add_shape",
+    "description": "Add a basic shape to an Impress slide: rectangle, rounded_rectangle, ellipse or line, at a position and size in centimetres (a line runs from x/y by width/height), with optional fill_color, line_color (#RRGGBB) and text (not for lines). One bridge undo step that removes it.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "slide": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "rectangle",
+            "rounded_rectangle",
+            "ellipse",
+            "line"
+          ]
+        },
+        "x_cm": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 200
+        },
+        "y_cm": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 200
+        },
+        "width_cm": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 200
+        },
+        "height_cm": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 200
+        },
+        "fill_color": {
+          "type": "string",
+          "minLength": 7,
+          "maxLength": 7
+        },
+        "line_color": {
+          "type": "string",
+          "minLength": 7,
+          "maxLength": 7
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 10000
+        },
+        "expected_title": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 10000,
+          "description": "the slide's title text as last read; if given and different, the call is refused as Stale"
+        }
+      },
+      "required": [
+        "document_id",
+        "slide",
+        "kind",
+        "x_cm",
+        "y_cm",
+        "width_cm",
+        "height_cm"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "impress_get_current_slide",
+    "description": "Read which slide the user is on in an Impress document's window, and the slides selected in the slide sorter when it is showing (otherwise just the current slide). Refused when the document has several windows. Read-only; read the slides with impress_get_slide.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "document_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "impress_list_layouts",
+    "description": "List the slide layouts the plugin can create or switch to (with their placeholders), the deck's master slides with the slides using each, and each slide's current layout. Read-only.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "required": [
+        "document_id"
+      ],
+      "additionalProperties": false
+    }
+  }
+]

@@ -1,0 +1,8 @@
+# LF everywhere, also in Windows checkouts, so the .oxt built from a clone has the same bytes
+# (and SHA-256) on every platform and the canonical-LICENSE test holds.
+* text=auto eol=lf
+*.png binary
+*.ods binary
+*.odt binary
+*.odp binary
+*.oxt binary

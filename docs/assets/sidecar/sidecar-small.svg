@@ -1,0 +1,7 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Small-size variant: Sidecar tile and enlarged S; orbit detail omitted for 16–32px legibility. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="Sidecar by Atlas Omnia">
+<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0f3f36"/><stop offset="1" stop-color="#1b7563"/></linearGradient></defs>
+<rect x="72" y="56" width="880" height="880" rx="220" fill="url(#g)"/>
+<text x="512" y="730" text-anchor="middle" font-family="Arial, sans-serif" font-weight="800" font-size="660" fill="white">S</text>
+</svg>

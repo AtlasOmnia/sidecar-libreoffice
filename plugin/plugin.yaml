@@ -1,0 +1,93 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Atlas Omnia
+name: atlas-sidecar-libreoffice
+version: 0.4.0
+description: "Sidecar for LibreOffice by Atlas Omnia: 55 tools for the Calc, Writer and Impress documents open in LibreOffice, through the companion extension's token-checked listener on 127.0.0.1:8660, plus an optional token-checked sidebar chat endpoint inside the Hermes gateway (off by default; chat_port 8661 turns it on) that forwards to your Hermes API server."
+author: AtlasOmnia
+license: Apache-2.0
+homepage: https://github.com/AtlasOmnia/sidecar-libreoffice
+platforms: [macos, windows]
+kind: standalone
+manifest_version: 2
+api_version: 1
+requires_hermes: ">=0.23.1"
+capabilities: []
+provides_tools:
+  - calc_get_overview
+  - calc_get_range
+  - calc_set_range
+  - calc_import_csv
+  - calc_sort_range
+  - calc_filter_range
+  - calc_create_chart
+  - calc_list_charts
+  - calc_get_rules
+  - calc_add_conditional_format
+  - calc_set_validation
+  - calc_freeze_panes
+  - calc_protect_sheet
+  - calc_insert_table
+  - calc_activate_sheet
+  - calc_recalculate
+  - calc_format_range
+  - calc_clear_range
+  - calc_create_sheet
+  - calc_execute_plan
+  - writer_get_text
+  - writer_insert_text
+  - writer_insert_paragraphs
+  - impress_list_slides
+  - libreoffice_undo
+  - calc_rename_sheet
+  - calc_copy_sheet
+  - calc_delete_sheet
+  - calc_find_replace
+  - calc_autofill
+  - calc_range_stats
+  - calc_add_comment
+  - calc_get_comments
+  - calc_clear_comments
+  - writer_get_structure
+  - writer_get_table
+  - writer_set_paragraph_style
+  - writer_find_replace
+  - writer_apply_edits
+  - writer_get_selection
+  - writer_replace_selection
+  - writer_format_selection
+  - writer_get_comments
+  - writer_add_comment
+  - impress_get_slide
+  - impress_create_slide
+  - impress_delete_slide
+  - impress_set_shape_text
+  - impress_add_text_box
+  - impress_find_replace
+  - impress_set_slide_layout
+  - impress_format_text
+  - impress_add_shape
+  - impress_get_current_slide
+  - impress_list_layouts
+provides_hooks: [pre_tool_call]
+config_schema:
+  bridge_token:
+    type: secret
+    env: LIBREOFFICE_LIVE_BRIDGE_TOKEN
+    description: "Pairing token from LibreOffice (Tools > Copy Sidecar pairing token). The document tools need it; stored in Hermes's .env, sent only to the extension on 127.0.0.1."
+  api_server_key:
+    type: secret
+    env: API_SERVER_KEY
+    required: false
+    description: "Optional, sidebar chat only: the key of your Hermes API server (the same API_SERVER_KEY the server uses). Read through Hermes, kept in memory, never sent to LibreOffice or logged."
+  bridge_port:
+    type: int
+    default: 8660
+    description: "Loopback port of the LibreOffice extension. Change it only together with the extension's port file (see the README)."
+  chat_port:
+    type: int
+    default: 0
+    description: "Sidebar chat endpoint inside the Hermes gateway: 0 (the default) keeps it off; 8661 is the port the LibreOffice panel calls. Any other port needs the same HERMES_LO_CHAT_PORT in LibreOffice. Read the README's Turn on the sidebar chat first."
+  api_server_port:
+    type: int
+    default: 8642
+    description: "Loopback port of the Hermes API server the sidebar chat is forwarded to."
