@@ -1,21 +1,30 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Atlas Omnia
-"""The sidebar chat panel: layout arithmetic, the send/reply cycle and its packaging."""
+"""The launcher panel in LibreOffice's sidebar (extension/python/hermes_sidebar.py): its layout
+file, the status line and Open Sidecar button, main-thread reporting, what it hands the launcher,
+the one-time read of the 0.4.0 theme, and its packaging. The 0.4.0 native transcript, input and
+theme toggle are gone."""
 from __future__ import annotations
 
+import http.client
 import importlib.util
+import json
+import os
 from pathlib import Path
 import sys
 import tempfile
-import threading
 import types
 import unittest
-import weakref
-from unittest.mock import patch
 import xml.etree.ElementTree as ET
-import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
+EXTENSION = ROOT / "extension"
+sys.path.insert(0, str(EXTENSION / "python"))
+import panel_registry  # noqa: E402
+import sidecar_launcher  # noqa: E402
+
+DLG = "{http://openoffice.org/2000/dialog}"
+OOR = "{http://openoffice.org/2001/registry}"
 
 
 def load_sidebar():
@@ -27,7 +36,7 @@ def load_sidebar():
     unohelper.ImplementationHelper = lambda: types.SimpleNamespace(addImplementation=lambda *args: None)
     awt = types.ModuleType("com.sun.star.awt")
     ui = types.ModuleType("com.sun.star.ui")
-    for module, names in ((awt, ("XActionListener", "XCallback", "XKeyListener", "XWindowListener", "XTextListener")),
+    for module, names in ((awt, ("XActionListener", "XCallback", "XWindowListener")),
                           (ui, ("XSidebarPanel", "XToolPanel", "XUIElement", "XUIElementFactory"))):
         for name in names:
             setattr(module, name, type(name, (), {}))
@@ -36,7 +45,7 @@ def load_sidebar():
     old = {name: sys.modules.get(name) for name in modules}
     sys.modules.update(modules)
     try:
-        spec = importlib.util.spec_from_file_location("tested_hermes_sidebar", ROOT / "extension" / "python" / "hermes_sidebar.py")
+        spec = importlib.util.spec_from_file_location("tested_hermes_sidebar", EXTENSION / "python" / "hermes_sidebar.py")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module
@@ -51,30 +60,66 @@ def load_sidebar():
 SIDEBAR = load_sidebar()
 
 
+def ask_hermes_0_4_0(port: int, token: str, message: str, session_id: str, document=None) -> str:
+    """The 0.4.0 panel's chat client, verbatim in behaviour. 0.4.0 extensions keep sending it to
+    the deprecated ``/chat`` route through 0.5.x (owner decision D2), so the plugin suites still
+    exercise it; the 0.5.0 extension no longer ships it."""
+    payload = {"message": message, "session_id": session_id}
+    if document:
+        payload["document"] = document
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=620.0)
+    try:
+        try:
+            connection.request("POST", "/chat", body=body, headers={
+                "Content-Type": "application/json", "Content-Length": str(len(body)),
+                "Host": f"127.0.0.1:{port}", "X-Hermes-Plugin-Key": token, "Connection": "close",
+            })
+            response = connection.getresponse()
+            raw = response.read(1024 * 1024 + 1)
+        except ConnectionRefusedError:
+            raise SIDEBAR.ChatUnavailable(
+                f"Hermes is not answering on 127.0.0.1:{port}. Start the Hermes gateway with the "
+                "atlas-sidecar-libreoffice plugin enabled, then send again.") from None
+        except (OSError, http.client.HTTPException):
+            raise SIDEBAR.ChatUnavailable("The connection to Hermes was lost before a reply arrived. "
+                                          "Hermes may still have changed the document: check it before sending again.") from None
+    finally:
+        connection.close()
+    try:
+        value = json.loads(raw.decode("utf-8")) if len(raw) <= 1024 * 1024 else None
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        value = None
+    if not isinstance(value, dict):
+        raise SIDEBAR.ChatUnavailable(f"Hermes sent a reply this panel could not read (HTTP {response.status}).")
+    if response.status == 200 and value.get("ok") is True and isinstance(value.get("reply"), str):
+        return value["reply"]
+    error = value.get("error")
+    raise SIDEBAR.ChatUnavailable(str(error)[:500] if isinstance(error, str) and error
+                                  else f"Hermes answered with HTTP {response.status}.")
+
+
+# test_chat_bridge, test_chat_lifecycle and test_private_files import SIDEBAR from here.
+SIDEBAR.ask_hermes = ask_hermes_0_4_0
+
+
 class Model:
-    """UNO property boundary; reject misspelled/new properties rather than magic mocks."""
     def __init__(self):
-        self.values = {"BackgroundColor": None, "TextColor": None, "HelpText": "", "Label": "",
-                       "FontDescriptor": types.SimpleNamespace(Name="Native UI", Height=0, Weight=100)}
-
-    def getPropertyValue(self, name):
-        return self.values[name]
-
-    def getPropertySetInfo(self):
-        return types.SimpleNamespace(hasPropertyByName=lambda name: name in self.values)
+        self.values = {"Label": "", "HelpText": ""}
 
     def setPropertyValue(self, name, value):
         if name not in self.values:
             raise ValueError("Unsupported UNO property: " + name)
         self.values[name] = value
 
+    def getPropertyValue(self, name):
+        return self.values[name]
+
 
 class Control:
     def __init__(self, text=""):
-        self.text, self.enabled, self.selection = text, True, None
-        self.model = Model()
-        self.actions, self.keys, self.rectangles, self.writes = [], [], [], []
-        self.text_listeners, self.visible = [], True
+        self.text, self.enabled, self.model = text, True, Model()
+        self.actions, self.rectangles = [], []
 
     def getModel(self):
         return self.model
@@ -83,29 +128,13 @@ class Control:
         return self.text
 
     def setText(self, value):
-        self.writes.append(threading.current_thread().name)
         self.text = value
-        for listener in self.text_listeners:
-            listener.textChanged(types.SimpleNamespace(Source=self))
-
-    def setVisible(self, value):
-        self.visible = value
-        self.writes.append(threading.current_thread().name)
-
-    def addTextListener(self, listener):
-        self.text_listeners.append(listener)
 
     def setEnable(self, value):
         self.enabled = value
 
-    def setSelection(self, value):
-        self.selection = value
-
     def addActionListener(self, listener):
         self.actions.append(listener)
-
-    def addKeyListener(self, listener):
-        self.keys.append(listener)
 
     def setPosSize(self, x, y, width, height, flags):
         self.rectangles.append((x, y, width, height))
@@ -114,12 +143,9 @@ class Control:
 class Window(Control):
     def __init__(self):
         super().__init__()
-        ns = "{http://openoffice.org/2000/dialog}"
-        root = ET.parse(ROOT / "extension/dialogs/SidecarChatPanel.xdl").getroot()
-        self.controls = {node.attrib[ns + "id"]: Control(node.attrib.get(ns + "value", ""))
-                         for node in root.find(ns + "bulletinboard")}
-        for name in ("Input", "Transcript"):
-            self.controls[name].model.values.update(AutoVScroll=False, VScroll=True)
+        root = ET.parse(EXTENSION / "dialogs" / "SidecarChatPanel.xdl").getroot()
+        self.controls = {node.attrib[DLG + "id"]: Control(node.attrib.get(DLG + "value", ""))
+                         for node in root.find(DLG + "bulletinboard")}
         self.visible = False
 
     def getControl(self, name):
@@ -129,10 +155,15 @@ class Window(Control):
         self.visible = value
 
 
+class Rect(types.SimpleNamespace):
+    pass
+
+
 class Parent:
-    def __init__(self, width=380, height=652):
-        self.area = types.SimpleNamespace(Width=width, Height=height)
+    def __init__(self, width=320, window_color=0x1E1E1E):
+        self.area = Rect(X=0, Y=0, Width=width, Height=500)
         self.listeners = []
+        self.window_color = window_color
 
     def getPosSize(self):
         return self.area
@@ -140,413 +171,262 @@ class Parent:
     def addWindowListener(self, listener):
         self.listeners.append(listener)
 
-
-class Context:
-    def __init__(self, window=None):
-        self.window, self.async_queue = window or Window(), QueuedAsync()
-        self.temporary = tempfile.TemporaryDirectory()
-        weakref.finalize(self, self.temporary.cleanup)
-        self.folder = Path(self.temporary.name).resolve() / "hermes-bridge"
-        self.container_calls = []
-
-    def getServiceManager(self):
-        return self
-
-    def createInstanceWithContext(self, name, ctx):
-        assert ctx is self
-        if name == "com.sun.star.awt.AsyncCallback":
-            return self.async_queue
-        if name == "com.sun.star.awt.ContainerWindowProvider":
-            return self
-        if name == "com.sun.star.util.PathSubstitution":
-            return self
-        raise AssertionError("Unexpected service: " + name)
-
-    def substituteVariables(self, value, required):
-        assert value == "$(user)/hermes-bridge" and required is True
-        return str(self.folder)
-
-    def createContainerWindow(self, *args):
-        self.container_calls.append(args)
-        return self.window
+    @property
+    def StyleSettings(self):  # XStyleSettingsSupplier's attribute, as PyUNO exposes it
+        return types.SimpleNamespace(WindowColor=self.window_color)
 
 
-
-class QueuedAsync:
-    """Holds main-thread callbacks until the test runs them, like LibreOffice's event loop."""
-
+class Async:
     def __init__(self):
-        self.queued, self.posted = [], threading.Event()
+        self.queue = []
 
-    def addCallback(self, callback, _data):
-        self.queued.append(callback)
-        self.posted.set()
+    def addCallback(self, callback, data):
+        self.queue.append(callback)
 
     def run(self):
-        callbacks, self.queued = self.queued, []
-        self.posted.clear()
-        for callback in callbacks:
-            callback.notify(None)
+        while self.queue:
+            self.queue.pop(0).notify(None)
 
 
-def panel(responder, width=380, height=652, frame=None, ctx=None, check_health=True, register=False):
-    ctx = ctx or Context()
-    from contextlib import ExitStack
-    with ExitStack() as stack:
-        if not register:
-            stack.enter_context(patch.object(SIDEBAR.panel_registry, "register"))
-        if check_health:
-            # Fake only token/HTTP boundaries; exercise the real health worker/callback.
-            stack.enter_context(patch.object(SIDEBAR, "read_pairing_token", return_value="x" * 32))
-            stack.enter_context(patch.object(SIDEBAR, "probe_health", return_value=True))
-        item = SIDEBAR.ChatPanel(ctx, frame, Parent(width, height), "private:hermes", responder)
-        if check_health:
-            if not ctx.async_queue.posted.wait(5):
-                raise AssertionError("initial health worker did not finish")
-            ctx.async_queue.run()
-        return item
+class Context:
+    def __init__(self, folder: Path):
+        self.window = Window()
+        self.async_ = Async()
+        self.folder = folder
+        outer = self
+
+        class Manager:
+            def createInstanceWithContext(self, name, _ctx):
+                if name == "com.sun.star.util.PathSubstitution":
+                    return types.SimpleNamespace(substituteVariables=lambda value, _flag: str(outer.folder))
+                if name == "com.sun.star.awt.AsyncCallback":
+                    return outer.async_
+                if name == "com.sun.star.awt.ContainerWindowProvider":
+                    return types.SimpleNamespace(createContainerWindow=lambda *args: outer.window)
+                if name == "com.sun.star.awt.Toolkit":
+                    return types.SimpleNamespace(getWorkArea=lambda: Rect(X=0, Y=25, Width=2560, Height=1055))
+                raise AssertionError(name)
+        self.manager = Manager()
+
+    def getServiceManager(self):
+        return self.manager
 
 
-class LayoutTests(unittest.TestCase):
-    def test_controls_stay_inside_the_panel_and_do_not_overlap(self):
-        for width in (300, 380, 520):
-            for height in (420, 480, 652, 900):
-                with self.subTest(width=width, height=height):
-                    item = panel(lambda *args: "ok", width, height)
-                    boxes = SIDEBAR.plan_layout(width, height)
-                    for name, (x, y, w, h) in boxes.items():
-                        if name == "ThemeNotice":
-                            self.assertFalse(item.Window.getControl(name).visible)
-                            continue
-                        self.assertTrue(x >= 0 and y >= 0 and w > 0 and h > 0, name)
-                        self.assertLessEqual(x + w, width, name)
-                        self.assertLessEqual(y + h, height, name)
-                        self.assertEqual(item.Window.getControl(name).rectangles[-1], (x, y, w, h))
-                    order = [boxes[name] for name in (
-                        "Title", "Subtitle", "Status", "TranscriptBackplate", "ComposerBorderTop")]
-                    for upper, lower in zip(order, order[1:]):
-                        self.assertLessEqual(upper[1] + upper[3], lower[1])
-                    self.assertLessEqual(boxes["NewChat"][0] + boxes["NewChat"][2], boxes["Send"][0])
-                    self.assertGreaterEqual(boxes["Send"][3], 28)
-                    for name in ("Transcript",):
-                        outer, inner = boxes[name + "Backplate"], boxes[name]
-                        self.assertEqual(inner, (outer[0] + 2, outer[1] + 2, outer[2] - 4, outer[3] - 4))
+class Frame:
+    def __init__(self, model="doc"):
+        self.model = model
 
-    def test_declared_minimum_matches_layout_and_resize_keeps_text(self):
-        item = panel(lambda *args: "ok", 300, 220)
-        self.assertEqual(item.getMinimalWidth(), 300)
-        size = item.getHeightForWidth(300)
-        self.assertEqual(size.Minimum, SIDEBAR.MINIMUM_HEIGHT)
-        self.assertEqual(size.Maximum, -1)
-        self.assertGreaterEqual(size.Preferred, size.Minimum)
-        self.assertEqual(SIDEBAR.plan_layout(300, 220), SIDEBAR.plan_layout(300, size.Minimum))
-        item._input.setText("draft 日本語")
-        for width in (300, 380, 520):
-            item._parent.area.Width, item._parent.area.Height = width, size.Minimum
-            item.windowResized(None)
-            self.assertEqual(item._input.text, "draft 日本語")
-            self.assertEqual(item._transcript.text, SIDEBAR.EMPTY_TRANSCRIPT)
+    def getController(self):
+        return types.SimpleNamespace(getModel=lambda: self.model)
+
+    def getContainerWindow(self):
+        return types.SimpleNamespace(getPosSize=lambda: Rect(X=100, Y=80, Width=1000, Height=700))
 
 
-    def test_sidebar_measurement_shrinks_a_previously_wide_dialog(self):
-        item = panel(lambda *args: "ok", 520, 652)
-        item._input.setText("retained draft")
-        item.getHeightForWidth(300)
-        item._async.run()
-        for name, rectangle in SIDEBAR.plan_layout(300, 652).items():
-            if name == "ThemeNotice":
-                continue
-            self.assertEqual(item.Window.getControl(name).rectangles[-1], rectangle)
-        item.windowResized(types.SimpleNamespace(Width=520, Height=652))
-        self.assertEqual(item.Window.getControl("Send").rectangles[-1],
-                         SIDEBAR.plan_layout(300, 652)["Send"])
-        self.assertEqual(item._input.text, "retained draft")
+class FakeLauncher:
+    def __init__(self):
+        self.read_token = None
+        self.probes, self.opens = [], []
 
-    def test_resize_uses_event_allocation_when_parent_size_is_stale(self):
-        item = panel(lambda *args: "ok", 520, 652)
-        item._input.setText("retained draft")
-        item.windowResized(types.SimpleNamespace(Width=300, Height=480))
-        expected = SIDEBAR.plan_layout(300, 480)
-        for name, rectangle in expected.items():
-            if name == "ThemeNotice":
-                continue
-            self.assertEqual(item.Window.getControl(name).rectangles[-1], rectangle)
-        self.assertEqual(item._input.text, "retained draft")
+    def configure(self, read_token):
+        self.read_token = read_token
+
+    def probe(self, report):
+        self.probes.append(report)
+
+    def open(self, document, host_scheme, frame, work_area, report):
+        self.opens.append((document, host_scheme, frame, work_area, report))
+        report(sidecar_launcher.OPENING, True)
+        return True
 
 
-class ConstructorTests(unittest.TestCase):
-    def test_app_specific_guidance_and_new_chat_match_bound_document(self):
-        cases = (("calc", "Spreadsheet assistant", "cells"),
-                 ("writer", "Writer assistant", "paragraph"),
-                 ("impress", "Impress assistant", "slide"))
-        for kind, subtitle, word in cases:
-            with self.subTest(kind=kind):
-                document = {"document_id": "fixture-" + kind, "type": kind}
-                frame = types.SimpleNamespace(getController=lambda: types.SimpleNamespace(getModel=lambda: document))
-                with patch.object(SIDEBAR.panel_registry, "identify", return_value=document, create=True):
-                    item = panel(lambda *args: "ok", frame=frame)
-                self.assertEqual(item.Window.getControl("Subtitle").text, "by Atlas Omnia")
-                self.assertEqual(item.Window.getControl("Title").text, "Sidecar for " + kind.title())
-                self.assertIn(word, item._transcript.text)
-                if kind != "calc":
-                    self.assertNotIn("cells", item._transcript.text)
-                original = item._transcript.text
-                item._append("You", "hello")
-                item.new_chat()
-                self.assertEqual(item._transcript.text, original)
-
-    def test_unknown_document_guidance_is_neutral(self):
-        for document in (None, {}, {"type": "unknown"}, {"type": []}):
-            self.assertEqual(SIDEBAR.application_copy(document),
-                             ("Document assistant", SIDEBAR.EMPTY_TRANSCRIPT))
-
-    def test_real_constructor_wires_controls_and_applies_palette_font_and_help(self):
-        ctx = Context()
-        item = panel(lambda *args: "ok", ctx=ctx)
-        self.assertEqual(ctx.container_calls, [(SIDEBAR.DIALOG_URL, "", item._parent, None)])
-        self.assertTrue(item.Window.visible)
-        self.assertEqual(item._parent.listeners, [item])
-        self.assertEqual(item._send.actions, [item])
-        self.assertEqual(item._input.keys, [item])
-        self.assertEqual(item.Window.getModel().values["BackgroundColor"], SIDEBAR.GROUND)
-        for name, background in (("Transcript", SIDEBAR.SURFACE), ("Input", SIDEBAR.RAISED)):
-            values = item.Window.getControl(name).getModel().values
-            self.assertEqual(values["BackgroundColor"], background)
-            self.assertEqual(values["TextColor"], SIDEBAR.TEXT)
-            self.assertEqual(values["FontDescriptor"].Height, 11)
-            self.assertEqual(values["FontDescriptor"].Name, "Native UI")
-            self.assertTrue(values["HelpText"])
-        self.assertEqual(item.Window.getControl("Title").model.values["TextColor"], SIDEBAR.TEXT)
-        self.assertEqual(item.Window.getControl("Title").model.values["FontDescriptor"].Height, 12)
-        for name in ("TranscriptBackplate", "ComposerBorderTop"):
-            self.assertEqual(item.Window.getControl(name).model.values["BackgroundColor"], SIDEBAR.BORDER_COLOR)
-        for name, color in (("Send", SIDEBAR.PRIMARY), ("NewChat", SIDEBAR.TEXT)):
-            button = item.Window.getControl(name)
-            backplate = item.Window.getControl(name + "Backplate")
-            self.assertEqual(button.model.values["TextColor"], SIDEBAR.GROUND)
-            self.assertEqual(button.model.values["BackgroundColor"], color)
-            self.assertEqual(backplate.model.values["BackgroundColor"], color)
-            self.assertEqual(button.rectangles[-1], backplate.rectangles[-1])
-        self.assertEqual(item._input.text, "")
-        self.assertIn("Conversation", item._transcript.model.values["HelpText"])
-        self.assertEqual(item.Window.getControl("ComposerLabel").text, "Your message")
-        self.assertEqual(item.Window.getControl("ComposerHelp").text, SIDEBAR.COMPOSER_HELP)
-        self.assertEqual(item._transcript.text, SIDEBAR.EMPTY_TRANSCRIPT)
-        self.assertEqual(item.snapshot()["lines"], [])
-        self.assertNotIn("Connected", item._status.text)
-        self.assertEqual(item._status.text, SIDEBAR.READY_STATUS)
-
-    def test_text_palette_pairs_meet_aa_contrast(self):
-        def luminance(color):
-            channels = [(color >> shift & 255) / 255 for shift in (16, 8, 0)]
-            linear = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
-            return sum(c * weight for c, weight in zip(linear, (0.2126, 0.7152, 0.0722)))
-        for foreground, background in ((SIDEBAR.TEXT, SIDEBAR.SURFACE), (SIDEBAR.TEXT, SIDEBAR.RAISED),
-                                       (SIDEBAR.MUTED, SIDEBAR.GROUND), (SIDEBAR.PRIMARY, SIDEBAR.GROUND),
-                                       (SIDEBAR.ERROR, SIDEBAR.GROUND), (SIDEBAR.RUNNING, SIDEBAR.GROUND)):
-            ratio = (luminance(foreground) + 0.05) / (luminance(background) + 0.05)
-            self.assertGreaterEqual(ratio, 4.5, (foreground, background, ratio))
-
-    def test_styling_property_failure_is_not_silently_ignored(self):
-        ctx = Context()
-        with patch.object(ctx.window.getControl("Input").model, "setPropertyValue", side_effect=ValueError("unsupported")):
-            with self.assertRaisesRegex(ValueError, "unsupported"):
-                panel(lambda *args: "ok", ctx=ctx)
-
-    def test_xdl_sets_styles_before_peer_creation_and_keeps_native_controls(self):
-        ns = "{http://openoffice.org/2000/dialog}"
-        root = ET.parse(ROOT / "extension/dialogs/SidecarChatPanel.xdl").getroot()
-        styles = {node.attrib[ns + "style-id"]: node.attrib for node in root.find(ns + "styles")}
-        controls = {node.attrib[ns + "id"]: node for node in root.find(ns + "bulletinboard")}
-        for name, background in (("Transcript", SIDEBAR.SURFACE), ("Input", SIDEBAR.RAISED)):
-            node = controls[name]
-            self.assertEqual(node.tag, ns + "textfield")
-            style = styles[node.attrib[ns + "style-id"]]
-            self.assertEqual(int(style[ns + "background-color"], 16), background)
-            self.assertEqual(style[ns + "border"], "none")
-            self.assertEqual(node.attrib[ns + "multiline"], "true")
-            self.assertEqual(node.attrib[ns + "vscroll"], "true")
-        self.assertEqual(controls["Transcript"].attrib[ns + "readonly"], "true")
-        self.assertNotIn(ns + "value", controls["Input"].attrib)
-        # Aqua may omit button fills; real buttons stay over visible backplates.
-        for name, color in (("Send", SIDEBAR.PRIMARY), ("NewChat", SIDEBAR.TEXT)):
-            self.assertEqual(controls[name].tag, ns + "button")
-            style = styles[controls[name].attrib[ns + "style-id"]]
-            self.assertEqual(int(style[ns + "background-color"], 16), color)
-            self.assertEqual(int(style[ns + "text-color"], 16), SIDEBAR.GROUND)
-            self.assertEqual(controls[name + "Backplate"].tag, ns + "text")
-            self.assertLess(list(controls).index(name + "Backplate"), list(controls).index(name))
-        # Button/transcript-only backings retain ordering; composer strips are
-        # geometrically disjoint (the paint-overlap regression checks that).
-        order = list(controls)
-        self.assertLess(order.index("ComposerBorderTop"), order.index("Input"))
-        self.assertLess(order.index("TranscriptBackplate"), order.index("Transcript"))
+DOCUMENT = {"document_id": "lo:1:2", "title": "sales.ods", "type": "calc"}
 
 
-class ChatCycleTests(unittest.TestCase):
-    def test_send_shows_the_message_then_the_reply_arrives_on_the_main_thread(self):
-        seen = []
-        item = panel(lambda message, session, document: seen.append((message, session, document, threading.current_thread().name)) or "Done.")
-        session = item._session_id
-        item.submit("  Add a total row  ")
-        self.assertEqual((item._lines, item._input.text, item._busy, item._send.enabled, item._status.text),
-                         (["You: Add a total row"], "", True, False, "Hermes is working…"))
-        self.assertTrue(item._async.posted.wait(5))
-        self.assertEqual(item._lines, ["You: Add a total row"])   # nothing touches the window off the main thread
-        item._async.run()
-        self.assertEqual(item._lines, ["You: Add a total row", "Hermes: Done."])
-        self.assertEqual((item._busy, item._send.enabled, item._status.text), (False, True, SIDEBAR.READY_STATUS))
-        self.assertEqual(seen, [("Add a total row", session, None, "SidecarSidebarChat")])
-        self.assertRegex(session, r"^lo-[0-9a-f]{32}$")
-        self.assertEqual(item.snapshot()["lines"], item._lines)
+class LauncherPanelTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.folder = Path(self.temp.name) / "hermes-bridge"
+        self.folder.mkdir(mode=0o700)
+        self.ctx = Context(self.folder)
+        self.launcher = FakeLauncher()
+        self.identify = getattr(panel_registry, "identify", None)
+        panel_registry.identify = lambda model: dict(DOCUMENT) if model == "doc" else None
+        self.addCleanup(self.restore_identify)
+        panel_registry._SAVED_THEMES.clear()
+        self.addCleanup(panel_registry._SAVED_THEMES.clear)
 
-    def test_empty_overlong_and_second_message_while_busy_are_not_sent(self):
-        calls = []
-        item = panel(lambda message, _session, _document: calls.append(message) or "ok")
-        item.submit("   ")
-        item.submit("x" * (SIDEBAR.MAX_MESSAGE + 1))
-        self.assertEqual((item._lines, item._busy), ([], False))
-        self.assertIn("too long", item._status.text)
-        item.submit("first")
-        item.submit("second")
-        self.assertTrue(item._async.posted.wait(5))
-        item._async.run()
-        self.assertEqual(calls, ["first"])
-        self.assertEqual(item._input.text, "second")   # kept for the user to send next
+    def restore_identify(self):
+        if self.identify is None:
+            panel_registry.__dict__.pop("identify", None)
+        else:
+            panel_registry.identify = self.identify
 
-    def test_a_failing_responder_is_reported_and_the_panel_stays_usable(self):
-        def boom(_message, _session, _document):
-            raise OSError("refused")
-        item = panel(boom)
-        item.submit("hello")
-        self.assertTrue(item._async.posted.wait(5))
-        item._async.run()
-        self.assertEqual(item._lines[-1], "Request error: The panel failed while asking Hermes (OSError). "
-                         "Check the document before sending again; the outcome may be unknown.")
-        self.assertTrue(item._send.enabled)
+    def panel(self, parent=None, frame=None):
+        panel = SIDEBAR.LauncherPanel(self.ctx, frame or Frame(), parent or Parent(), "private:resource/x",
+                                      launcher=self.launcher)
+        self.addCleanup(panel.disposing, None)
+        return panel
 
-        def unavailable(_message, _session, _document):
-            raise SIDEBAR.ChatUnavailable("Hermes is not answering.")
-        item = panel(unavailable)
-        item.submit("hello")
-        self.assertTrue(item._async.posted.wait(5))
-        item._async.run()
-        self.assertEqual(item._lines[-1], "Request error: Hermes is not answering.")
-        self.assertEqual(item._status.model.values["TextColor"], SIDEBAR.ERROR)
-        self.assertIn("check conversation", item._status.text)
+    def test_layout_file_holds_only_the_launcher_controls(self):
+        root = ET.parse(EXTENSION / "dialogs" / "SidecarChatPanel.xdl").getroot()
+        ids = [node.attrib[DLG + "id"] for node in root.find(DLG + "bulletinboard")]
+        self.assertEqual(ids, list(SIDEBAR.CONTROLS))
+        for gone in ("Transcript", "Input", "Send", "NewChat", "ThemeToggle", "ThemeNotice", "Connectivity"):
+            self.assertNotIn(gone, ids)
+        button = root.find(f"{DLG}bulletinboard/{DLG}button")
+        self.assertEqual(button.attrib[DLG + "value"], "Open Sidecar")
+        self.assertEqual(button.attrib[DLG + "tab-index"], "0")  # first stop for keyboard users
+        self.assertNotIn("background-color", (EXTENSION / "dialogs" / "SidecarChatPanel.xdl").read_text(encoding="utf-8"))
 
-    def test_new_chat_changes_the_session_clears_the_transcript_and_drops_a_late_reply(self):
-        release = threading.Event()
-        item = panel(lambda _message, _session, _document: release.wait(5) and "late reply")
-        first = item._session_id
-        item.submit("question")
-        item.new_chat()
-        self.assertNotEqual(item._session_id, first)
-        self.assertEqual((item._lines, item._busy, item._send.enabled), ([], True, False))
-        self.assertEqual(item._transcript.text, SIDEBAR.EMPTY_TRANSCRIPT)
-        self.assertEqual(item._status.text, "Previous request still running…")
-        item.submit("next draft")
-        release.set()
-        self.assertTrue(item._async.posted.wait(5))
-        item._async.run()
-        self.assertEqual(item._lines, [])
-        self.assertEqual((item._busy, item._send.enabled), (False, True))
-        self.assertEqual(item._input.text, "next draft")
-        self.assertEqual(item._transcript.text, SIDEBAR.EMPTY_TRANSCRIPT)
+    def test_construction_shows_checking_and_probes_once(self):
+        panel = self.panel()
+        window = self.ctx.window
+        self.assertTrue(window.visible)
+        self.assertEqual(window.controls["Title"].text, "Sidecar for Calc")
+        self.assertEqual(window.controls["Subtitle"].text, "by Atlas Omnia")
+        self.assertEqual(window.controls["Status"].text, sidecar_launcher.CHECKING)
+        self.assertEqual(window.controls["OpenSidecar"].model.values["Label"], "Open Sidecar")
+        self.assertTrue(window.controls["OpenSidecar"].model.values["HelpText"])
+        self.assertEqual(len(self.launcher.probes), 1)
+        self.assertEqual(self.launcher.opens, [])
+        self.assertIs(panel_registry.latest(), panel)
 
-    def test_history_unicode_draft_and_bound_document_survive_multiple_turns(self):
-        document = {"document_id": "explicit-document"}
-        frame = types.SimpleNamespace(getController=lambda: types.SimpleNamespace(getModel=lambda: document))
-        seen = []
-        with patch.object(SIDEBAR.panel_registry, "identify", return_value=document, create=True):
-            item = panel(lambda message, session, binding: seen.append(binding) or "Réponse 日本語\nsecond line", frame=frame)
-            for message in ("First — α", "Second"):
-                item._input.setText(message)
-                item._send.actions[0].actionPerformed(None)
-                self.assertTrue(item._async.posted.wait(5))
-                item._input.setText("draft to keep")
-                item._async.run()
-                item._async.posted.clear()
-                self.assertEqual(item._input.text, "draft to keep")
-        self.assertEqual(seen, [document, document])
-        self.assertEqual(item._transcript.text, "\n\n".join(item._lines))
-        self.assertIn("You: First — α", item._transcript.text)
-        self.assertIn("You: Second", item._transcript.text)
-        self.assertEqual(item._transcript.text.count("Réponse 日本語"), 2)
-        self.assertEqual(item._transcript.selection.Max, len(item._transcript.text))
-        for control in item.Window.controls.values():
-            self.assertNotIn("SidecarSidebarChat", control.writes)
+    def test_reports_are_applied_on_the_main_thread_only(self):
+        self.panel()
+        self.launcher.probes[0](sidecar_launcher.CHAT_OFF, False)
+        self.assertEqual(self.ctx.window.controls["Status"].text, sidecar_launcher.CHECKING)
+        self.ctx.async_.run()
+        self.assertEqual(self.ctx.window.controls["Status"].text, sidecar_launcher.CHAT_OFF)
+        self.assertTrue(self.ctx.window.controls["OpenSidecar"].enabled)
 
-    def test_uncertain_error_is_visible_without_retry_or_draft_loss(self):
-        calls = []
-        def uncertain(message, session, document):
-            calls.append(message)
-            raise SIDEBAR.ChatUnavailable("Connection lost. Hermes may still have changed the document: check it before sending again.")
-        item = panel(uncertain)
-        item.submit("change something")
-        self.assertTrue(item._async.posted.wait(5))
-        item._input.setText("new unsent draft")
-        item._async.run()
-        self.assertEqual(calls, ["change something"])
-        self.assertEqual(item._input.text, "new unsent draft")
-        self.assertIn("may still have changed", item._transcript.text)
-        self.assertIn("Request error:", item._transcript.text)
-        self.assertNotIn("Not sent", item._transcript.text)
-        self.assertEqual(item._status.model.values["TextColor"], SIDEBAR.ERROR)
-        self.assertFalse(item._busy)
-        self.assertTrue(item._send.enabled)
-        item.windowResized(None)
-        self.assertEqual(calls, ["change something"])
+    def test_the_button_hands_document_frame_work_area_and_scheme_to_the_launcher(self):
+        panel = self.panel(parent=Parent(window_color=0xF0F0F0))
+        self.ctx.window.controls["OpenSidecar"].actions[0].actionPerformed(None)
+        document, scheme, frame, work_area, report = self.launcher.opens[0]
+        self.assertEqual(document, DOCUMENT)
+        self.assertEqual(scheme, "light")
+        self.assertEqual(frame, (100, 80, 1000, 700))
+        self.assertEqual(work_area, (0, 25, 2560, 1055))
+        self.ctx.async_.run()
+        self.assertEqual(self.ctx.window.controls["Status"].text, sidecar_launcher.OPENING)
+        self.assertFalse(self.ctx.window.controls["OpenSidecar"].enabled)
+        self.assertFalse(panel.open_sidecar())  # busy: a second press starts nothing
+        self.assertEqual(len(self.launcher.opens), 1)
+        report(sidecar_launcher.OPEN, False)
+        self.ctx.async_.run()
+        self.assertEqual(self.ctx.window.controls["Status"].text, sidecar_launcher.OPEN)
+        self.assertTrue(self.ctx.window.controls["OpenSidecar"].enabled)
 
-    def test_idle_new_chat_button_restores_empty_state_without_erasing_draft(self):
-        item = panel(lambda *args: "ok")
-        item._append("Hermes", "Earlier reply")
-        item._input.setText("draft")
-        previous_session = item._session_id
-        item._new_chat.actions[0].actionPerformed(None)
-        self.assertEqual(item._transcript.text, SIDEBAR.EMPTY_TRANSCRIPT)
-        self.assertEqual(item._lines, [])
-        self.assertEqual(item._input.text, "draft")
-        self.assertNotEqual(item._session_id, previous_session)
-        self.assertEqual(item._status.text, SIDEBAR.READY_STATUS)
-        self.assertTrue(item._send.enabled)
+    def test_a_late_probe_never_overwrites_a_launch(self):
+        self.panel()
+        probe = self.launcher.probes[0]
+        self.ctx.window.controls["OpenSidecar"].actions[0].actionPerformed(None)
+        probe(sidecar_launcher.IDLE, False)
+        self.ctx.async_.run()
+        self.assertEqual(self.ctx.window.controls["Status"].text, sidecar_launcher.OPENING)
 
-    def test_enter_sends_and_shift_enter_does_not(self):
-        calls = []
-        item = panel(lambda message, _session, _document: calls.append(message) or "ok")
-        item._input.setText("line one\n")
-        item.keyReleased(types.SimpleNamespace(KeyCode=SIDEBAR.KEY_RETURN, Modifiers=SIDEBAR.MODIFIER_SHIFT))
-        item.keyReleased(types.SimpleNamespace(KeyCode=65, Modifiers=0))
-        self.assertEqual((item._lines, item._input.text), ([], "line one\n"))
-        item.keyReleased(types.SimpleNamespace(KeyCode=SIDEBAR.KEY_RETURN, Modifiers=0))
-        self.assertEqual(item._lines, ["You: line one"])
-        self.assertTrue(item._async.posted.wait(5))
+    def test_a_disposed_panel_ignores_reports_and_clicks(self):
+        panel = self.panel()
+        report = self.launcher.probes[0]
+        panel.disposing(None)
+        report(sidecar_launcher.IDLE, False)
+        self.ctx.async_.run()
+        self.assertEqual(self.ctx.window.controls["Status"].text, sidecar_launcher.CHECKING)
+        self.assertFalse(panel.open_sidecar())
+        self.assertIsNone(panel_registry.latest())
+
+    def test_the_token_is_read_from_this_profiles_bridge_folder(self):
+        self.panel()
+        (self.folder / "token").write_text("k" * 43 + "\n")
+        os.chmod(self.folder / "token", 0o600)
+        self.assertEqual(self.launcher.read_token(), "k" * 43)
+
+    def test_the_saved_0_4_0_theme_is_the_initial_appearance(self):
+        (self.folder / panel_registry.PREFERENCE_NAME).write_text(json.dumps({"theme": "light"}) + "\n")
+        os.chmod(self.folder / panel_registry.PREFERENCE_NAME, 0o600)
+        panel = self.panel(parent=Parent(window_color=0x101010))
+        self.assertEqual(panel._host_scheme(), "light")
+        (self.folder / panel_registry.PREFERENCE_NAME).write_text(json.dumps({"theme": "dark"}) + "\n")
+        self.assertEqual(panel._host_scheme(), "light")  # read once per LibreOffice process
+        self.assertEqual(sorted(p.name for p in self.folder.iterdir()), [panel_registry.PREFERENCE_NAME])
+
+    def test_without_a_saved_theme_libreoffice_colours_decide(self):
+        self.assertEqual(self.panel(parent=Parent(window_color=0x1C1C1E))._host_scheme(), "dark")
+        panel_registry._SAVED_THEMES.clear()
+        self.assertEqual(self.panel(parent=Parent(window_color=0xFFFFFF))._host_scheme(), "light")
+        self.assertFalse((self.folder / panel_registry.PREFERENCE_NAME).exists())
+        class NoStyle(Parent):
+            @property
+            def StyleSettings(self):
+                raise AttributeError("StyleSettings")
+        panel_registry._SAVED_THEMES.clear()
+        self.assertIsNone(self.panel(parent=NoStyle())._host_scheme())
+        self.assertEqual(SIDEBAR.scheme_from_color(None), None)
+        self.assertEqual(SIDEBAR.scheme_from_color(-1), None)
+
+    def test_layout_fits_every_width_without_overlap(self):
+        for width in (200, 240, 300, 420, 800):
+            boxes = SIDEBAR.plan_layout(width)
+            allocated = max(width, SIDEBAR.MINIMAL_WIDTH)
+            for name, (x, y, w, h) in boxes.items():
+                self.assertGreaterEqual(x, 0, name)
+                self.assertLessEqual(x + w, allocated, name)
+                self.assertLessEqual(y + h, SIDEBAR.PANEL_HEIGHT, name)
+            stacked = sorted((boxes[n] for n in ("Subtitle", "Status", "OpenSidecar")), key=lambda r: r[1])
+            for upper, lower in zip(stacked, stacked[1:]):
+                self.assertLessEqual(upper[1] + upper[3], lower[1])
+
+    def test_sidebar_host_size(self):
+        panel = self.panel()
+        size = panel.getHeightForWidth(360)
+        self.assertEqual((size.Minimum, size.Maximum, size.Preferred), (SIDEBAR.PANEL_HEIGHT,) * 3)
+        self.assertEqual(panel.getMinimalWidth(), SIDEBAR.MINIMAL_WIDTH)
+        self.ctx.async_.run()
+        self.assertEqual(self.ctx.window.controls["OpenSidecar"].rectangles[-1],
+                         SIDEBAR.plan_layout(360)["OpenSidecar"])
+
+    def test_snapshot_for_the_development_hook(self):
+        snapshot = self.panel().snapshot()
+        self.assertEqual(snapshot["status"], sidecar_launcher.CHECKING)
+        self.assertEqual(snapshot["document"], DOCUMENT)
+        self.assertEqual(snapshot["frame"], (100, 80, 1000, 700))
+        self.assertTrue(snapshot["button_enabled"])
+
+    def test_display_title(self):
+        self.assertEqual(SIDEBAR.display_title({"type": "writer"}), "Sidecar for Writer")
+        self.assertEqual(SIDEBAR.display_title({"type": "impress"}), "Sidecar for Impress")
+        self.assertEqual(SIDEBAR.display_title(None), "Sidecar for LibreOffice")
+
+    def test_no_chat_code_left_in_the_panel(self):
+        source = (EXTENSION / "python" / "hermes_sidebar.py").read_text(encoding="utf-8")
+        for gone in ("/chat", "/health", "X-Hermes-Plugin-Key", "http.client", "Transcript", "write_theme",
+                     "ThemeToggle", "XKeyListener"):
+            self.assertNotIn(gone, source)
 
 
-class PackagingTests(unittest.TestCase):
-    def test_extension_ships_and_registers_the_sidebar(self):
-        sys.path.insert(0, str(ROOT / "scripts"))
-        try:
-            import build_oxt
-        finally:
-            sys.path.pop(0)
-        for name in ("Sidebar.xcu", "Factories.xcu", "dialogs/SidecarChatPanel.xdl", "icons/sidecar-deck.png",
-                     "python/hermes_sidebar.py", "python/panel_registry.py", "python/office_ops.py"):
-            self.assertIn(name, build_oxt.FILES)
-            self.assertTrue((ROOT / "extension" / name).is_file(), name)
-        manifest = (ROOT / "extension" / "META-INF" / "manifest.xml").read_text(encoding="utf-8")
-        for name in ("Sidebar.xcu", "Factories.xcu", "python/hermes_sidebar.py"):
-            self.assertIn(f'manifest:full-path="{name}"', manifest)
-        dialog = (ROOT / "extension" / "dialogs" / "SidecarChatPanel.xdl").read_text(encoding="utf-8")
-        for control in SIDEBAR.plan_layout(300, 600):
-            self.assertIn(f'dlg:id="{control}"', dialog)
-        self.assertIn("vnd.atlasomnia.sidecar:open-chat", (ROOT / "extension" / "Addons.xcu").read_text(encoding="utf-8"))
-        factories = (ROOT / "extension" / "Factories.xcu").read_text(encoding="utf-8")
-        sidebar = (ROOT / "extension" / "Sidebar.xcu").read_text(encoding="utf-8")
-        self.assertIn(SIDEBAR.FACTORY_IMPLEMENTATION, factories)
-        self.assertIn("private:resource/toolpanel/SidecarSidebar/SidecarChatPanel", sidebar)
-        self.assertIn("<value>SidecarSidebar</value>", factories)
-        self.assertIn(SIDEBAR.DIALOG_URL.split("/", 3)[2], (ROOT / "extension" / "description.xml").read_text(encoding="utf-8"))
+class Packaging(unittest.TestCase):
+    def test_sidebar_ids_are_kept(self):
+        tree = ET.parse(EXTENSION / "Sidebar.xcu").getroot()
+        names = [node.get(OOR + "name") for node in tree.iter("node")]
+        self.assertIn("SidecarDeck", names)
+        self.assertIn("SidecarChatPanel", names)
+        text = (EXTENSION / "Sidebar.xcu").read_text(encoding="utf-8")
+        self.assertIn("private:resource/toolpanel/SidecarSidebar/SidecarChatPanel", text)
+
+    def test_manifest_and_build_list_carry_the_launcher_files(self):
+        manifest = (EXTENSION / "META-INF" / "manifest.xml").read_text(encoding="utf-8")
+        spec = importlib.util.spec_from_file_location("build_oxt_for_sidebar", ROOT / "scripts" / "build_oxt.py")
+        build = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(build)
+        for name in ("sidecar_launcher.py", "launcher_macos.py", "launcher_windows.py"):
+            self.assertIn(f'manifest:full-path="python/{name}" manifest:media-type="application/binary"', manifest)
+            self.assertIn(f"python/{name}", build.FILES)
+        self.assertIn("dialogs/SidecarChatPanel.xdl", build.FILES)
+        for name in build.FILES:
+            self.assertTrue((EXTENSION / name).is_file(), name)
+        self.assertEqual(len(build.FILES), len(set(build.FILES)))
 
 
 if __name__ == "__main__":

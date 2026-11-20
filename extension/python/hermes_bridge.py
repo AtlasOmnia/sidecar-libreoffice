@@ -214,6 +214,49 @@ def _install_focus_listener(ctx: Any, state: FocusState, logger: logging.Logger)
         return None
 
 
+def _install_launcher_hooks(ctx: Any, runtime: "BridgeRuntime", logger: logging.Logger) -> Any:
+    """Tell the Sidecar launcher when a document closes or LibreOffice quits, so the plugin
+    disconnects the matching Sidecar windows and the browser this LibreOffice started is asked to
+    quit (docs/web-protocol.md 4.3); also sweeps leftover launch files at start."""
+    try:
+        import sidecar_launcher
+        from com.sun.star.document import XDocumentEventListener
+        from com.sun.star.frame import XTerminateListener
+
+        class DocumentClosed(unohelper.Base, XDocumentEventListener):
+            def documentEventOccured(self, event: Any) -> None:  # UNO's spelling
+                if str(getattr(event, "EventName", "")) != "OnUnload":
+                    return
+                try:
+                    source = getattr(event, "Source", None)
+                    if source is not None and runtime.document_type(source):
+                        sidecar_launcher.on_document_closed(runtime.document_identity(source)["document_id"])
+                except Exception:
+                    return
+
+            def disposing(self, _source: Any) -> None:
+                return None
+
+        class Quitting(unohelper.Base, XTerminateListener):
+            def queryTermination(self, _event: Any) -> None:
+                return None
+
+            def notifyTermination(self, _event: Any) -> None:
+                sidecar_launcher.on_terminate()
+
+            def disposing(self, _source: Any) -> None:
+                return None
+
+        sidecar_launcher.on_start()
+        closed, quitting = DocumentClosed(), Quitting()
+        ctx.getValueByName("/singletons/com.sun.star.frame.theGlobalEventBroadcaster").addDocumentEventListener(closed)
+        runtime.desktop.addTerminateListener(quitting)
+        return (closed, quitting)
+    except Exception as exc:  # Sidecar windows then stay open until the user closes them
+        logger.warning("Sidecar windows will not be released on close: %s", type(exc).__name__)
+        return None
+
+
 class BridgeRuntime(ExtraOps):
     _fault = BridgeFault
 
@@ -1052,22 +1095,23 @@ class BridgeRuntime(ExtraOps):
             return {"shown": True, "document": self.document_identity(doc)}
         return self.dispatch(show)
 
-    def dev_chat_panel(self, args: dict[str, Any]) -> dict[str, Any]:
-        """Development only (LibreOffice started with HERMES_LO_DEV=1): drive or read the open chat panel."""
+    def dev_open_sidecar(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Development only (LibreOffice started with HERMES_LO_DEV=1): read the newest launcher
+        panel, or press its Open Sidecar button. The only bridge operation that can reach the
+        launcher; ``show_chat_panel`` only shows the deck."""
         if os.environ.get("HERMES_LO_DEV") != "1":
-            raise BridgeFault("Validation", "unsupported operation: dev_chat_panel", 400)
-        action, text = args.get("action"), args.get("text", "")
-        if action not in ("submit", "read") or not isinstance(text, str) or len(text) > 8000:
-            raise BridgeFault("Validation", "dev_chat_panel arguments are invalid", 400)
+            raise BridgeFault("Validation", "unsupported operation: dev_open_sidecar", 400)
+        action = args.get("action")
+        if set(args) != {"action"} or action not in ("open", "read"):
+            raise BridgeFault("Validation", "dev_open_sidecar arguments are invalid", 400)
         import panel_registry
 
         def run() -> dict[str, Any]:
             panel = panel_registry.latest()
             if panel is None:
-                raise BridgeFault("NotFound", "no chat panel is open", 404)
-            if action == "submit":
-                panel.submit(text)
-            return panel.snapshot()
+                raise BridgeFault("NotFound", "no Sidecar panel is open", 404)
+            started = panel.open_sidecar() if action == "open" else None
+            return {**panel.snapshot(), "started": started}
         return self.dispatch(run)
 
     def dev_select_text(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -1147,8 +1191,8 @@ class BridgeRuntime(ExtraOps):
             return self.impress_list_slides(args)
         if op == "undo":
             return self.undo(args)
-        if op == "dev_chat_panel":
-            return self.dev_chat_panel(args)
+        if op == "dev_open_sidecar":
+            return self.dev_open_sidecar(args)
         if op == "show_chat_panel":
             return self.show_chat_panel(args)
         if op == "dev_select_text":
@@ -1402,6 +1446,7 @@ def start_server(ctx: Any) -> None:
                 } if runtime.document_type(doc) else None
             except Exception as exc:
                 logger.warning("chat panels will not name their document: %s", type(exc).__name__)
+            runtime.launcher_hooks = _install_launcher_hooks(ctx, runtime, logger)
             logger.info("bridge started on loopback port %d", port)
         except Exception as exc:
             try:

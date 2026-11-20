@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Atlas Omnia
-"""The chat panels that are currently open, shared by the bridge and the sidebar component.
+"""The open launcher panels and the 0.4.0 theme preference, shared by the bridge and the sidebar.
 
 LibreOffice loads each Python component file as its own module, so the two components meet
 through this plain module, imported by name from the extension's ``python`` directory.
@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import stat
 import sys
+import threading
 import uuid
 import weakref
 from contextlib import contextmanager
@@ -23,6 +24,8 @@ if _COMPONENT_DIR not in sys.path:
 import private_files  # noqa: E402
 
 _PANELS: list[weakref.ReferenceType] = []
+_SAVED_THEMES: dict[Path, str | None] = {}
+_SAVED_LOCK = threading.Lock()
 
 
 def register(panel: Any) -> None:
@@ -44,11 +47,18 @@ def latest() -> Any:
     return panels[-1] if panels else None
 
 
-def apply_theme(folder: Path, theme: str, notice: str = "") -> None:
-    """Called on the UNO main thread; never broadcast across owning profiles."""
-    for panel in live():
-        if panel._theme_folder == folder:
-            panel._apply_theme(theme, notice)
+def saved_theme(folder: Path) -> str | None:
+    """The Light/Dark choice the 0.4.0 panel saved in this profile, or ``None`` when it saved
+    none. Read once per LibreOffice process; 0.5.0 never writes it."""
+    folder = Path(folder)
+    with _SAVED_LOCK:
+        if folder not in _SAVED_THEMES:
+            try:
+                present = os.path.lexists(folder / PREFERENCE_NAME)
+            except OSError:
+                present = False
+            _SAVED_THEMES[folder] = read_theme(folder) if present else None
+        return _SAVED_THEMES[folder]
 
 
 PREFERENCE_NAME = "sidebar-theme.json"

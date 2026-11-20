@@ -1,0 +1,744 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Atlas Omnia
+"""The Sidecar launcher (extension/python/sidecar_launcher.py): the R18 channel against the
+contract's test vectors and a loopback fake plugin, the bootstrap file, bounds, the browser
+command line, the launch state machine, release on close and quit, and the R10 rule that only the
+panel button (or the development hook) can start a browser."""
+from __future__ import annotations
+
+import ast
+import base64
+import hashlib
+import hmac
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import socket
+import stat
+import sys
+import tempfile
+import threading
+import time
+import unittest
+import urllib.parse
+import urllib.request
+
+ROOT = Path(__file__).resolve().parents[1]
+EXTENSION = ROOT / "extension" / "python"
+sys.path.insert(0, str(EXTENSION))
+import sidecar_launcher as L  # noqa: E402
+
+TOKEN = "example-pairing-token-0123456789abcdefghijklmnopq"
+VECTOR_BODY = (b'{"document":{"document_id":"lo:5f0c:1","title":"sales.ods","type":"calc"},'
+               b'"host_scheme":"light","mode":"app","bounds":{"x":1240,"y":102,"width":400,"height":848}}')
+DOCUMENT = {"document_id": "lo:5f0c:1", "title": "sales.ods", "type": "calc"}
+
+
+def b64u(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+class ContractVectors(unittest.TestCase):
+    """docs/web-protocol.md section 3.3, reproduced exactly."""
+    client_nonce = b64u(bytes(range(32)))
+    server_nonce = b64u(bytes(range(32, 64)))
+
+    def test_nonces_match_the_document(self):
+        self.assertEqual(self.client_nonce, "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")
+        self.assertEqual(self.server_nonce, "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8")
+
+    def test_hello_proof_and_channel_key(self):
+        self.assertEqual(L.hello_proof(TOKEN, 8661, self.client_nonce, self.server_nonce),
+                         "6gAIEWKHsH5HilYgR4IFZrAzSBZsyxB9kUYyFBW3DZk")
+        self.assertEqual(L.channel_key(TOKEN, 8661, self.client_nonce, self.server_nonce).hex(),
+                         "49b917b673bf4f129f826f3e5680411bd328a6712a6a000b133a1cda36d5a1f1")
+
+    def test_request_and_response_macs(self):
+        key = L.channel_key(TOKEN, 8661, self.client_nonce, self.server_nonce)
+        self.assertEqual(hashlib.sha256(VECTOR_BODY).hexdigest(),
+                         "3220ea4ed994980c359a102c7b2d2d604bb604de9885a619bedc17373995bbba")
+        self.assertEqual(L.request_mac(key, "POST", "/launcher/launch", 1, VECTOR_BODY),
+                         "PmCfNapRjDIVbyHqzSrGnkU_mqgxbEr4XLWu0iQocX8")
+        self.assertEqual(L.response_mac(key, 1, 201, b'{"ok":true}'),
+                         "ZgH8usVq9byBTZB7tp2Fi7PfEpJk8YBIw-EfdEN6FRc")
+        self.assertEqual(L.EMPTY_SHA256, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+        self.assertEqual(L.request_mac(key, "GET", "/launcher/launch/AAAAAAAAAAAAAAAAAAAAAA", 2, b""),
+                         "pz9hSDdfVxWMTMKc772QPcntSZE8IV0T3jHUv836CuI")
+
+    def test_the_launch_body_is_serialized_as_in_the_vector(self):
+        body = L.encode_body({"document": DOCUMENT, "host_scheme": "light", "mode": "app",
+                              "bounds": {"x": 1240, "y": 102, "width": 400, "height": 848}})
+        self.assertEqual(body, VECTOR_BODY)
+
+
+class FakePlugin:
+    """A loopback stand-in for the plugin's /launcher routes, written from the contract text
+    (independently of sidecar_launcher). It records every raw request it receives."""
+
+    def __init__(self, token: str = TOKEN) -> None:
+        self.token = token
+        self.channels: dict[str, dict] = {}
+        self.requests: list[dict] = []
+        self.states: list[str] = ["exchanged"]
+        self.window_live = False
+        self.hello_override = None
+        self.launch_override = None
+        self.forge_response_mac = False
+        self.url_port = None
+        self.released: list[dict] = []
+        plugin = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                return None
+
+            def _answer(self, status, payload, n=None, key=None, raw=None):
+                body = raw if raw is not None else json.dumps(payload).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                if key is not None:
+                    mac = L.b64u(hmac.new(key, "\n".join(["sidecar-launcher/1 response", str(n), str(status),
+                                                          hashlib.sha256(body).hexdigest()]).encode(),
+                                          hashlib.sha256).digest())
+                    self.send_header("X-Sidecar-MAC", "A" * 43 if plugin.forge_response_mac else mac)
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def _route(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(length) if length else b""
+                plugin.requests.append({"method": self.command, "path": self.path,
+                                        "headers": dict(self.headers.items()), "body": body})
+                port = self.server.server_address[1]
+                if self.path == "/launcher/hello":
+                    if plugin.hello_override is not None:
+                        return self._answer(*plugin.hello_override)
+                    cn = json.loads(body)["client_nonce"]
+                    sn = L.b64u(secrets.token_bytes(32))
+                    key = hmac.new(plugin.token.encode(), "\n".join(["sidecar-launcher/1 channel", str(port), cn, sn]).encode(),
+                                   hashlib.sha256).digest()
+                    proof = L.b64u(hmac.new(plugin.token.encode(), "\n".join(["sidecar-launcher/1 hello", str(port), cn, sn]).encode(),
+                                            hashlib.sha256).digest())
+                    plugin.channels[sn] = {"key": key, "next": 1}
+                    return self._answer(200, {"ok": True, "v": 1, "server_nonce": sn, "server_proof": proof,
+                                              "expires_in": 120, "chat": {"ready": True, "reason": None}})
+                channel = plugin.channels.get(self.headers.get("X-Sidecar-Channel", ""))
+                n = self.headers.get("X-Sidecar-Counter", "")
+                if channel is None or n != str(channel["next"]):
+                    return self._answer(401, {"ok": False, "code": "launcher_auth", "error": "x"})
+                expected = L.b64u(hmac.new(channel["key"], "\n".join(["sidecar-launcher/1 request", self.command, self.path, n,
+                                                                       hashlib.sha256(body).hexdigest()]).encode(),
+                                           hashlib.sha256).digest())
+                if not hmac.compare_digest(expected, self.headers.get("X-Sidecar-MAC", "")):
+                    plugin.channels.pop(self.headers.get("X-Sidecar-Channel", ""), None)
+                    return self._answer(401, {"ok": False, "code": "launcher_auth", "error": "x"})
+                channel["next"] += 1
+                key, n = channel["key"], int(n)
+                if self.path == "/launcher/launch" and self.command == "POST":
+                    if plugin.launch_override is not None:
+                        return self._answer(*plugin.launch_override, n=n, key=key)
+                    if plugin.window_live:
+                        return self._answer(200, {"ok": True, "launch_id": None, "url": None, "window_live": True,
+                                                  "expires_in": 0}, n, key)
+                    code = L.b64u(secrets.token_bytes(32))
+                    url = f"http://127.0.0.1:{plugin.url_port or port}/ui/index.html#launch={code}"
+                    return self._answer(201, {"ok": True, "launch_id": L.b64u(secrets.token_bytes(16)), "url": url,
+                                              "window_live": False, "expires_in": 30}, n, key)
+                if self.path.startswith("/launcher/launch/") and self.command == "GET":
+                    state = plugin.states.pop(0) if len(plugin.states) > 1 else plugin.states[0]
+                    return self._answer(200, {"ok": True, "state": state}, n, key)
+                if self.path == "/launcher/release" and self.command == "POST":
+                    plugin.released.append(json.loads(body))
+                    return self._answer(200, {"ok": True, "released": 1}, n, key)
+                return self._answer(404, {"ok": False, "code": "not_found", "error": "x"}, n, key)
+
+            do_GET = _route
+            do_POST = _route
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.daemon_threads = True
+        self.port = self.server.server_address[1]
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class ChannelClient(unittest.TestCase):
+    def setUp(self):
+        self.plugin = FakePlugin()
+        self.addCleanup(self.plugin.close)
+        self.client = L.LauncherClient(self.plugin.port, lambda: TOKEN)
+
+    def test_hello_launch_status_release_over_one_channel(self):
+        self.assertEqual(self.client.hello(), {"ready": True, "reason": None})
+        answer = self.client.launch(DOCUMENT, "dark", "app", {"x": 1, "y": 2, "width": 400, "height": 600})
+        self.assertFalse(answer["window_live"])
+        self.assertRegex(answer["url"], rf"^http://127\.0\.0\.1:{self.plugin.port}/ui/index\.html#launch=[A-Za-z0-9_-]{{43}}$")
+        self.assertEqual(self.client.status(answer["launch_id"]), "exchanged")
+        self.assertEqual(self.client.release(DOCUMENT["document_id"], "document_closed"), 1)
+        counters = [r["headers"].get("X-Sidecar-Counter") for r in self.plugin.requests]
+        self.assertEqual(counters, [None, "1", "2", "3"])
+
+    def test_the_pairing_token_never_leaves_the_launcher(self):
+        self.client.hello()
+        self.client.launch(DOCUMENT, None, "tab", None)
+        for request in self.plugin.requests:
+            raw = json.dumps(request["headers"]).encode() + request["path"].encode() + request["body"]
+            self.assertNotIn(TOKEN.encode(), raw)
+            names = {name.lower() for name in request["headers"]}
+            self.assertNotIn("x-hermes-plugin-key", names)
+            self.assertNotIn("origin", names)
+            self.assertFalse(any(name.startswith("sec-fetch-") for name in names))
+            self.assertNotIn("x-sidecar-session", names)
+            self.assertEqual(request["headers"]["Host"], f"127.0.0.1:{self.plugin.port}")
+        self.assertEqual(json.loads(self.plugin.requests[1]["body"])["bounds"], None)
+
+    def test_a_wrong_proof_means_not_your_hermes_and_nothing_more_is_sent(self):
+        self.plugin.token = "another-token-" + "x" * 40
+        with self.assertRaises(L.LauncherError) as caught:
+            self.client.hello()
+        self.assertEqual(str(caught.exception), L.NOT_YOURS.format(port=self.plugin.port))
+        with self.assertRaises(L.LauncherError):
+            self.client.launch(DOCUMENT, None, "tab", None)
+        self.assertEqual(len(self.plugin.requests), 1)
+
+    def test_hello_failures_map_to_the_panel_texts(self):
+        cases = [
+            ((503, {"ok": False, "code": "no_pairing", "error": "x"}), L.NO_PAIRING),
+            ((401, {"ok": False, "error": "the pairing token does not match: pair LibreOffice with Hermes again"}),
+             L.OLD_PLUGIN),
+            ((404, {"ok": False, "error": "unknown route"}), L.OLD_PLUGIN),
+            ((200, {"ok": True, "v": 1, "server_nonce": "short", "server_proof": "x"}),
+             L.NOT_YOURS.format(port=self.plugin.port)),
+            ((500, {"ok": False, "code": "internal", "error": "x"}), L.NOT_YOURS.format(port=self.plugin.port)),
+            ((200, None, None, None, b"not json"), L.NOT_YOURS.format(port=self.plugin.port)),
+        ]
+        for override, text in cases:
+            self.plugin.hello_override = override
+            with self.assertRaises(L.LauncherError, msg=override) as caught:
+                L.LauncherClient(self.plugin.port, lambda: TOKEN).hello()
+            self.assertEqual(str(caught.exception), text)
+
+    def test_connection_refused_means_chat_is_off(self):
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        with self.assertRaises(L.LauncherError) as caught:
+            L.LauncherClient(port, lambda: TOKEN).hello()
+        self.assertEqual(str(caught.exception), L.CHAT_OFF)
+        self.assertEqual(L.CHAT_OFF.splitlines(), ["Chat is off in Hermes.", "See README ▸ Sidebar chat."])
+
+    def test_a_missing_or_forged_response_mac_is_refused(self):
+        self.client.hello()
+        self.plugin.forge_response_mac = True
+        with self.assertRaises(L.LauncherError) as caught:
+            self.client.launch(DOCUMENT, None, "tab", None)
+        self.assertEqual(str(caught.exception), L.NOT_YOURS.format(port=self.plugin.port))
+        with self.assertRaises(L.LauncherError):  # the channel is dropped after a bad answer
+            self.client.status("A" * 22)
+
+    def test_a_url_for_another_port_or_shape_is_refused(self):
+        self.plugin.url_port = self.plugin.port + 1
+        self.client.hello()
+        with self.assertRaises(L.LauncherError) as caught:
+            self.client.launch(DOCUMENT, None, "tab", None)
+        self.assertEqual(str(caught.exception), L.NOT_YOURS.format(port=self.plugin.port))
+
+    def test_an_authenticated_refusal_shows_the_plugins_sentence(self):
+        self.plugin.launch_override = (429, {"ok": False, "code": "session_cap",
+                                             "error": "Too many Sidecar windows are open."})
+        self.client.hello()
+        with self.assertRaises(L.LauncherError) as caught:
+            self.client.launch(DOCUMENT, None, "tab", None)
+        self.assertEqual(str(caught.exception), "Too many Sidecar windows are open.")
+
+    def test_window_live_answer(self):
+        self.plugin.window_live = True
+        self.client.hello()
+        self.assertEqual(self.client.launch(DOCUMENT, None, "app", {"x": 0, "y": 0, "width": 400, "height": 500}),
+                         {"window_live": True, "launch_id": None, "url": None})
+
+    def test_token_file_problems_are_reported_before_anything_is_sent(self):
+        def unsafe():
+            raise L.LauncherError(L.TOKEN_UNSAFE)
+        with self.assertRaises(L.LauncherError) as caught:
+            L.LauncherClient(self.plugin.port, unsafe).hello()
+        self.assertEqual(str(caught.exception), L.TOKEN_UNSAFE)
+        self.assertEqual(self.plugin.requests, [])
+
+    def test_read_pairing_token_uses_private_files(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "token"
+            with self.assertRaises(L.LauncherError) as caught:
+                L.read_pairing_token(path)
+            self.assertEqual(str(caught.exception), L.TOKEN_MISSING)
+            path.write_text(TOKEN + "\n")
+            os.chmod(path, 0o644)
+            with self.assertRaises(L.LauncherError) as caught:
+                L.read_pairing_token(path)
+            self.assertEqual(str(caught.exception), L.TOKEN_UNSAFE)
+            os.chmod(path, 0o600)
+            self.assertEqual(L.read_pairing_token(path), TOKEN)
+
+
+URL = "http://127.0.0.1:8661/ui/index.html#launch=" + "A" * 43
+
+
+class BootstrapFile(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.cache = Path(self.temp.name)
+
+    def test_exact_bytes_private_modes_and_name(self):
+        path = L.write_bootstrap(URL, self.cache)
+        self.assertEqual(path.parent, self.cache / "Sidecar for LibreOffice" / "launch")
+        self.assertRegex(path.name, r"^launch-[0-9a-f]{32}\.html$")
+        self.assertEqual(path.read_bytes(), (
+            '<!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer">'
+            f'<meta http-equiv="refresh" content="0;url={URL}"><title>Opening Sidecar…</title>').encode("utf-8"))
+        if os.name != "nt":
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(path.parent.parent.stat().st_mode), 0o700)
+
+    def test_refuses_unexpected_url_characters(self):
+        for bad in (URL + '"><script>', URL.replace("http", "https"), "file:///etc/passwd", URL + " x"):
+            with self.assertRaises(ValueError):
+                L.write_bootstrap(bad, self.cache)
+
+    @unittest.skipIf(os.name == "nt", "POSIX permission bits")
+    def test_refuses_a_launch_folder_others_can_read(self):
+        folder = self.cache / "Sidecar for LibreOffice" / "launch"
+        folder.mkdir(parents=True, mode=0o700)
+        os.chmod(folder, 0o755)
+        with self.assertRaises(OSError):
+            L.write_bootstrap(URL, self.cache)
+        self.assertEqual(list(folder.iterdir()), [])
+
+    def test_sweep_removes_only_old_launch_files(self):
+        old = L.write_bootstrap(URL, self.cache)
+        new = L.write_bootstrap(URL, self.cache)
+        other = old.parent / "notes.html"
+        other.write_text("x")
+        past = time.time() - 120
+        os.utime(old, (past, past))
+        os.utime(other, (past, past))
+        self.assertEqual(L.sweep(self.cache), 1)
+        self.assertFalse(old.exists())
+        self.assertTrue(new.exists())
+        self.assertTrue(other.exists())
+        self.assertEqual(L.sweep(self.cache / "missing"), 0)
+
+
+class BoundsAndArgv(unittest.TestCase):
+    def test_right_of_the_frame_when_400_points_fit(self):
+        self.assertEqual(L.compute_bounds((100, 80, 1000, 700), (0, 0, 2560, 1080)),
+                         {"x": 1100, "y": 80, "width": 400, "height": 700})
+
+    def test_against_the_work_area_edge_when_it_does_not_fit(self):
+        self.assertEqual(L.compute_bounds((600, 240, 1820, 560), (0, 0, 2560, 1080)),
+                         {"x": 2160, "y": 240, "width": 400, "height": 560})
+
+    def test_clamped_into_the_contract_rectangle(self):
+        bounds = L.compute_bounds((0, -40000, 200, 100), (0, 0, 1440, 900))
+        self.assertEqual(bounds, {"x": 200, "y": -32768, "width": 400, "height": 240})
+        self.assertEqual(L.compute_bounds(None, None)["width"], 400)
+
+    def test_title_bar_guess(self):
+        bounds = {"x": 1240, "y": 102, "width": 400, "height": 848}
+        self.assertEqual(L.window_geometry(bounds, "darwin"), ((1240, 70), (400, 880)))
+        self.assertEqual(L.window_geometry(bounds, "win32"), ((1240, 102), (400, 848)))
+
+    def test_frozen_flag_list(self):
+        profile = Path("/cache/Sidecar for LibreOffice/browser")
+        argv = L.browser_argv("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", profile,
+                              "file:///cache/Sidecar%20for%20LibreOffice/launch/launch-" + "0" * 32 + ".html",
+                              (1240, 70), (400, 880), "darwin")
+        self.assertEqual(argv, [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "--user-data-dir=/cache/Sidecar for LibreOffice/browser",
+            "--app=file:///cache/Sidecar%20for%20LibreOffice/launch/launch-" + "0" * 32 + ".html",
+            "--window-position=1240,70", "--window-size=400,880",
+            "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--disable-sync",
+            "--disable-background-networking", "--disable-component-update", "--disable-default-apps",
+            "--use-mock-keychain"])
+        self.assertNotIn("--use-mock-keychain", L.browser_argv("c", profile, "file:///x.html", (0, 0), (1, 1), "win32"))
+
+    def test_each_flag_name_is_tested(self):
+        for flag in ("--no-first-run", "--no-default-browser-check", "--disable-extensions", "--disable-sync",
+                     "--disable-background-networking", "--disable-component-update", "--disable-default-apps"):
+            self.assertIn(flag, L.CHROMIUM_FLAGS)
+        self.assertEqual(L.MACOS_ONLY_FLAGS, ("--use-mock-keychain",))
+
+    def test_the_launch_url_never_goes_on_the_command_line(self):
+        for target in (URL, "http://127.0.0.1:8661/ui/index.html", "file:///x.html#launch=" + "A" * 43):
+            with self.assertRaises(ValueError):
+                L.browser_argv("c", Path("/p"), target, (0, 0), (1, 1), "darwin")
+
+
+class FakeAdapter:
+    def __init__(self, cache: Path, browsers=(("Google Chrome", "/Apps/Chrome"),)) -> None:
+        self.cache = cache
+        self.browsers = list(browsers)
+        self.spawned: list[list[str]] = []
+        self.bootstrap_at_spawn: list[bytes] = []
+        self.opened: list[Path] = []
+        self.raised: list[int] = []
+        self.terminated: list[int] = []
+        self.alive: set[int] = set()
+        self.raise_ok = True
+        self.spawn_error = None
+        self.handoff = False
+        self.next_pid = 500
+
+    def find_browsers(self):
+        return list(self.browsers)
+
+    def cache_dir(self):
+        return self.cache
+
+    def spawn(self, argv):
+        if self.spawn_error:
+            raise self.spawn_error
+        self.spawned.append(argv)
+        target = next(a for a in argv if a.startswith("--app="))[len("--app="):]
+        self.bootstrap_at_spawn.append(Path(urllib.request.url2pathname(urllib.parse.urlsplit(target).path)).read_bytes())
+        self.next_pid += 1
+        if not (self.handoff and self.alive):
+            self.alive.add(self.next_pid)
+        return self.next_pid
+
+    def running(self, pid):
+        return pid in self.alive
+
+    def open_default(self, path):
+        self.opened.append(Path(path))
+        self.bootstrap_at_spawn.append(Path(path).read_bytes())
+
+    def raise_pid(self, pid):
+        self.raised.append(pid)
+        return self.raise_ok
+
+    def terminate(self, pid):
+        self.terminated.append(pid)
+        self.alive.discard(pid)
+
+
+class FakeClient:
+    instances: list["FakeClient"] = []
+
+    def __init__(self, script: dict) -> None:
+        self.script = script
+        self.calls: list[tuple] = []
+
+    def factory(self):
+        def make(port, read_token, timeout=L.CALL_TIMEOUT_SECONDS):
+            self.calls.append(("new", port, timeout))
+            return self
+        return make
+
+    def hello(self):
+        self.calls.append(("hello",))
+        if self.script.get("hello_error"):
+            raise L.LauncherError(self.script["hello_error"])
+        return {"ready": True, "reason": None}
+
+    def launch(self, document, host_scheme, mode, bounds):
+        self.calls.append(("launch", document, host_scheme, mode, bounds))
+        if self.script.get("window_live"):
+            return {"window_live": True, "launch_id": None, "url": None}
+        return {"window_live": False, "launch_id": "B" * 22, "url": URL}
+
+    def status(self, launch_id):
+        self.calls.append(("status", launch_id))
+        states = self.script.setdefault("states", ["exchanged"])
+        return states.pop(0) if len(states) > 1 else states[0]
+
+    def release(self, document_id, reason):
+        self.calls.append(("release", document_id, reason))
+        return 1
+
+
+class Clock:
+    def __init__(self):
+        self.now = 1000.0
+        self.sleeps: list[float] = []
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+class StateMachine(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.cache = Path(self.temp.name)
+        self.adapter = FakeAdapter(self.cache)
+        self.clock = Clock()
+        self.reports: list[tuple[str, bool]] = []
+        self.threads: list[str] = []
+        self.deferred: list = []
+
+    def launcher(self, script=None, platform="darwin"):
+        self.client = FakeClient(script or {})
+
+        def start(fn, name):
+            self.threads.append(name)
+            if name == "SidecarLaunchCleanup":
+                self.deferred.append(fn)
+            else:
+                fn()
+        launcher = L.Launcher(adapter=self.adapter, platform=platform, port=lambda: 8661,
+                              client=self.client.factory(), sleep=self.clock.sleep, clock=self.clock, start=start)
+        launcher.configure(lambda: TOKEN)
+        return launcher
+
+    def report(self, text, busy):
+        self.reports.append((text, busy))
+
+    def open(self, launcher, frame=(100, 80, 1000, 700)):
+        return launcher.open(dict(DOCUMENT), "dark", frame, (0, 0, 2560, 1080), self.report)
+
+    def launch_files(self):
+        folder = self.cache / "Sidecar for LibreOffice" / "launch"
+        return sorted(folder.iterdir()) if folder.exists() else []
+
+    def test_app_mode_spawns_with_the_bootstrap_file_and_reports_open(self):
+        launcher = self.launcher({"states": ["pending", "pending", "exchanged"]})
+        self.assertTrue(self.open(launcher))
+        self.assertEqual(self.reports, [(L.OPENING, True), (L.OPEN, False)])
+        self.assertEqual(self.threads, ["SidecarLauncher"])
+        launch = [c for c in self.client.calls if c[0] == "launch"][0]
+        self.assertEqual(launch[1:], (DOCUMENT, "dark", "app", {"x": 1100, "y": 80, "width": 400, "height": 700}))
+        argv = self.adapter.spawned[0]
+        self.assertEqual(argv[0], "/Apps/Chrome")
+        self.assertIn("--window-position=1100,48", argv)
+        self.assertIn("--window-size=400,732", argv)
+        self.assertIn(f"--user-data-dir={self.cache / 'Sidecar for LibreOffice' / 'browser'}", argv)
+        self.assertNotIn("launch=", " ".join(argv))
+        self.assertIn(URL.encode(), self.adapter.bootstrap_at_spawn[0])
+        self.assertEqual([c[0] for c in self.client.calls].count("status"), 3)
+        self.assertEqual(self.clock.sleeps, [0.5, 0.5, 0.5])
+        self.assertEqual(self.launch_files(), [])  # deleted at the first non-pending state
+        if os.name != "nt":
+            self.assertEqual(stat.S_IMODE((self.cache / "Sidecar for LibreOffice" / "browser").stat().st_mode), 0o700)
+
+    def test_tab_mode_without_a_chromium_browser(self):
+        self.adapter.browsers = []
+        launcher = self.launcher()
+        self.open(launcher)
+        launch = [c for c in self.client.calls if c[0] == "launch"][0]
+        self.assertEqual(launch[3:], ("tab", None))
+        self.assertEqual(self.adapter.spawned, [])
+        self.assertEqual(len(self.adapter.opened), 1)
+        self.assertRegex(self.adapter.opened[0].name, r"^launch-[0-9a-f]{32}\.html$")
+        self.assertEqual(self.reports[-1], (L.OPEN, False))
+        self.assertEqual(self.launch_files(), [])
+
+    def test_still_pending_after_20_s_reports_did_not_connect_and_keeps_the_file_until_30_s(self):
+        launcher = self.launcher({"states": ["pending"]})
+        self.open(launcher)
+        self.assertEqual(self.reports[-1], (L.DID_NOT_CONNECT, False))
+        self.assertEqual([c[0] for c in self.client.calls].count("status"), 40)
+        self.assertEqual(len(self.launch_files()), 1)
+        self.assertEqual(len(self.deferred), 1)
+        self.deferred.pop()()
+        self.assertEqual(self.clock.now - 1000.0, 30.0)
+        self.assertEqual(self.launch_files(), [])
+
+    def test_expired_and_double_use(self):
+        for state, text in (("expired", L.DID_NOT_CONNECT), ("double_use", L.DOUBLE_USE)):
+            self.reports.clear()
+            self.open(self.launcher({"states": [state]}))
+            self.assertEqual(self.reports[-1], (text, False))
+            self.assertEqual(self.launch_files(), [])
+
+    def test_window_live_raises_the_browser_this_libreoffice_started(self):
+        launcher = self.launcher()
+        self.open(launcher)
+        pid = next(iter(self.adapter.alive))
+        self.client.script["window_live"] = True
+        self.open(launcher)
+        self.assertEqual(self.adapter.raised, [pid])
+        self.assertEqual(self.reports[-1], (L.OPEN, False))
+        self.assertEqual(len(self.adapter.spawned), 1)  # nothing new was started
+        self.adapter.raise_ok = False
+        self.open(launcher)
+        self.assertEqual(self.reports[-1], (L.ALREADY_OPEN, False))
+
+    def test_window_live_without_a_known_browser_or_in_tab_mode_says_already_open(self):
+        launcher = self.launcher({"window_live": True})
+        self.open(launcher)
+        self.assertEqual(self.reports[-1], (L.ALREADY_OPEN, False))
+        self.assertEqual(self.adapter.raised, [])
+        self.adapter.browsers = []
+        self.open(launcher)
+        self.assertEqual(self.reports[-1], (L.ALREADY_OPEN, False))
+        self.assertEqual(self.adapter.spawned + self.adapter.opened, [])
+
+    def test_a_handoff_to_the_running_instance_keeps_the_first_pid(self):
+        launcher = self.launcher()
+        self.open(launcher)
+        first = next(iter(self.adapter.alive))
+        self.adapter.handoff = True  # the second process exits at once and is not alive
+        second = dict(DOCUMENT, document_id="lo:5f0c:2")
+        launcher.open(second, None, (0, 0, 800, 600), (0, 0, 2560, 1080), self.report)
+        self.assertEqual(len(self.adapter.spawned), 2)
+        self.assertEqual(launcher._live_browser(), first)
+
+    def test_hello_failures_start_nothing(self):
+        for text in (L.CHAT_OFF, L.NO_PAIRING, L.NOT_YOURS.format(port=8661), L.OLD_PLUGIN):
+            self.reports.clear()
+            self.open(self.launcher({"hello_error": text}))
+            self.assertEqual(self.reports, [(L.OPENING, True), (text, False)])
+        self.assertEqual(self.adapter.spawned + self.adapter.opened, [])
+        self.assertEqual(self.launch_files(), [])
+
+    def test_a_spawn_failure_removes_the_file(self):
+        self.adapter.spawn_error = FileNotFoundError("gone")
+        self.open(self.launcher())
+        self.assertEqual(self.reports[-1], (L.COULD_NOT_START, False))
+        self.assertEqual(self.launch_files(), [])
+
+    def test_one_launch_per_document_at_a_time(self):
+        launcher = self.launcher()
+        held = []
+        launcher._start = lambda fn, name: held.append(fn)
+        self.assertTrue(self.open(launcher))
+        self.assertFalse(self.open(launcher))
+        held.pop()()
+        launcher._start = lambda fn, name: fn()
+        self.assertTrue(self.open(launcher))
+
+    def test_documents_without_a_supported_type_and_unsupported_systems(self):
+        launcher = self.launcher()
+        self.assertFalse(launcher.open(None, None, None, None, self.report))
+        self.assertFalse(launcher.open({"document_id": "x", "type": "draw"}, None, None, None, self.report))
+        self.assertEqual(self.reports, [(L.NO_DOCUMENT, False)] * 2)
+        unsupported = L.Launcher(platform="linux", port=lambda: 8661, start=lambda fn, name: fn())
+        self.assertIsNone(unsupported.adapter)
+        self.assertFalse(unsupported.open(dict(DOCUMENT), None, None, None, self.report))
+        self.assertEqual(self.reports[-1], (L.UNSUPPORTED, False))
+
+    def test_host_scheme_is_light_dark_or_null(self):
+        launcher = self.launcher()
+        launcher.open(dict(DOCUMENT), "sepia", None, None, self.report)
+        self.assertIsNone([c for c in self.client.calls if c[0] == "launch"][0][2])
+
+    def test_probe_reports_idle_or_the_problem_and_starts_nothing(self):
+        self.launcher().probe(self.report)
+        self.launcher({"hello_error": L.CHAT_OFF}).probe(self.report)
+        self.assertEqual(self.reports, [(L.IDLE, False), (L.CHAT_OFF, False)])
+        self.assertEqual(self.adapter.spawned + self.adapter.opened, [])
+        self.assertEqual(self.threads, ["SidecarLauncherProbe", "SidecarLauncherProbe"])
+
+    def test_document_closed_releases_only_documents_this_libreoffice_opened(self):
+        launcher = self.launcher()
+        launcher.on_document_closed("lo:other:1")
+        self.assertEqual(self.client.calls, [])
+        self.open(launcher)
+        self.client.calls.clear()
+        launcher.on_document_closed(DOCUMENT["document_id"])
+        self.assertEqual([c[0] for c in self.client.calls], ["new", "hello", "release"])
+        self.assertEqual(self.client.calls[-1], ("release", DOCUMENT["document_id"], "document_closed"))
+        self.client.calls.clear()
+        launcher.on_document_closed(DOCUMENT["document_id"])
+        self.assertEqual(self.client.calls, [])
+
+    def test_terminate_releases_everything_quits_the_browser_and_sweeps_once(self):
+        launcher = self.launcher()
+        self.open(launcher)
+        pid = next(iter(self.adapter.alive))
+        stale = L.write_bootstrap(URL, self.cache)
+        past = time.time() - 120
+        os.utime(stale, (past, past))
+        self.client.calls.clear()
+        launcher.on_terminate()
+        self.assertEqual(self.client.calls[0], ("new", 8661, L.QUIT_TIMEOUT_SECONDS))
+        self.assertEqual(self.client.calls[-1], ("release", None, "host_quit"))
+        self.assertEqual(self.adapter.terminated, [pid])
+        self.assertFalse(stale.exists())
+        launcher.on_terminate()
+        self.assertEqual(self.adapter.terminated, [pid])
+        self.assertFalse(self.open(launcher))  # nothing starts while LibreOffice quits
+
+    def test_terminate_without_any_window_sends_nothing(self):
+        launcher = self.launcher()
+        launcher.on_terminate()
+        self.assertEqual(self.client.calls, [])
+        self.assertEqual(self.adapter.terminated, [])
+
+    def test_terminate_after_the_documents_already_closed_still_sends_host_quit(self):
+        # Observed natively: LibreOffice unloads every document (OnUnload) before it reports
+        # termination, so the per-document releases run on workers that may not finish in time.
+        launcher = self.launcher()
+        self.open(launcher)
+        launcher.on_document_closed(DOCUMENT["document_id"])
+        self.client.calls.clear()
+        launcher.on_terminate()
+        self.assertEqual(self.client.calls[-1], ("release", None, "host_quit"))
+
+    def test_terminate_never_raises(self):
+        launcher = self.launcher({"hello_error": L.CHAT_OFF})
+        launcher._opened.add("x")
+        self.adapter.terminate = lambda pid: (_ for _ in ()).throw(RuntimeError("boom"))
+        launcher.on_terminate()
+
+
+class SpawnOnlyFromTheButton(unittest.TestCase):
+    """R10 by construction: a browser starts only from Launcher.open (the panel button), which
+    only the panel's open_sidecar and the HERMES_LO_DEV hook call."""
+
+    @staticmethod
+    def callers(path: Path, name: str) -> set[str]:
+        """Names of the innermost functions that contain a call ``<x>.name(...)``."""
+        found: set[str] = set()
+
+        def visit(node: ast.AST, current: str | None) -> None:
+            for child in ast.iter_child_nodes(node):
+                inner = child.name if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) else current
+                if (isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute)
+                        and child.func.attr == name):
+                    found.add(str(current))
+                visit(child, inner)
+        visit(ast.parse(path.read_text(encoding="utf-8")), None)
+        return found
+
+    def test_spawn_and_open_default_are_called_only_by_the_launch_step(self):
+        self.assertEqual(self.callers(EXTENSION / "sidecar_launcher.py", "spawn"), {"_launch"})
+        self.assertEqual(self.callers(EXTENSION / "sidecar_launcher.py", "open_default"), {"_launch"})
+        self.assertEqual(self.callers(EXTENSION / "sidecar_launcher.py", "_launch"), {"run"})
+
+    def test_only_the_button_and_the_dev_hook_open_sidecar(self):
+        self.assertEqual(self.callers(EXTENSION / "hermes_sidebar.py", "open"), {"open_sidecar"})
+        self.assertEqual(self.callers(EXTENSION / "hermes_sidebar.py", "open_sidecar"), {"actionPerformed"})
+        self.assertEqual(self.callers(EXTENSION / "hermes_bridge.py", "open_sidecar"), {"run"})
+        source = (EXTENSION / "hermes_bridge.py").read_text(encoding="utf-8")
+        hook = source[source.index("    def dev_open_sidecar"):source.index("    def dev_select_text")]
+        self.assertIn('os.environ.get("HERMES_LO_DEV") != "1"', hook)
+        self.assertIn("panel.open_sidecar()", hook)
+        self.assertEqual(source.count("open_sidecar()"), 1)
+        show = source[source.index("    def show_chat_panel"):source.index("    def dev_open_sidecar")]
+        self.assertNotIn("launcher", show.lower())
+
+    def test_the_bridge_reaches_the_launcher_only_for_release(self):
+        source = (EXTENSION / "hermes_bridge.py").read_text(encoding="utf-8")
+        used = set(re.findall(r"sidecar_launcher\.(\w+)", source))
+        self.assertEqual(used, {"on_document_closed", "on_terminate", "on_start"})
+
+
+if __name__ == "__main__":
+    unittest.main()

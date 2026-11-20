@@ -2,58 +2,18 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- Copyright 2026 Atlas Omnia -->
 <!DOCTYPE dlg:window PUBLIC "-//OpenOffice.org//DTD OfficeDocument 1.0//EN" "dialog.dtd">
-<dlg:window xmlns:dlg="http://openoffice.org/2000/dialog" xmlns:script="http://openoffice.org/2000/script" dlg:id="SidecarChatPanel" dlg:style-id="ground" dlg:left="0" dlg:top="0" dlg:width="200" dlg:height="300" dlg:closeable="true" dlg:moveable="true" dlg:withtitlebar="false">
-  <!-- Styles precede native peers. Transcript/button-only backings and disjoint
-       composer border/fill strips frame genuine native input and actions.
-       VScroll is an honest fallback; Python requests optional AutoVScroll only
-       after checking model support. Native focus cues are left intact. -->
+<dlg:window xmlns:dlg="http://openoffice.org/2000/dialog" xmlns:script="http://openoffice.org/2000/script" dlg:id="SidecarChatPanel" dlg:left="0" dlg:top="0" dlg:width="160" dlg:height="90" dlg:closeable="true" dlg:moveable="true" dlg:withtitlebar="false">
+  <!-- The launcher panel. Native colours, so it follows LibreOffice's own appearance.
+       Python lays the controls out in pixels (hermes_sidebar.plan_layout). -->
   <dlg:styles>
-    <dlg:style dlg:style-id="ground" dlg:background-color="0x0c1117"/>
-    <dlg:style dlg:style-id="title" dlg:background-color="0x0c1117" dlg:text-color="0xeef2f6" dlg:font-height="12" dlg:font-weight="150"/>
-    <dlg:style dlg:style-id="caption" dlg:background-color="0x0c1117" dlg:text-color="0xaeb9c5" dlg:font-height="10"/>
-    <dlg:style dlg:style-id="composer-label" dlg:background-color="0x14212d" dlg:text-color="0xeef2f6" dlg:font-height="10" dlg:font-weight="150"/>
-    <dlg:style dlg:style-id="composer-caption" dlg:background-color="0x14212d" dlg:text-color="0xaeb9c5" dlg:font-height="10"/>
-    <dlg:style dlg:style-id="transcript" dlg:background-color="0x101923" dlg:text-color="0xeef2f6" dlg:border="none" dlg:font-height="11"/>
-    <dlg:style dlg:style-id="input" dlg:background-color="0x14212d" dlg:text-color="0xeef2f6" dlg:border="none" dlg:font-height="11"/>
-    <dlg:style dlg:style-id="backplate" dlg:background-color="0x5b7083"/>
-    <dlg:style dlg:style-id="primary-action" dlg:background-color="0x78d6c2" dlg:text-color="0x0c1117" dlg:font-height="11"/>
-    <dlg:style dlg:style-id="secondary-action" dlg:background-color="0xeef2f6" dlg:text-color="0x0c1117" dlg:font-height="11"/>
+    <dlg:style dlg:style-id="title" dlg:font-height="12" dlg:font-weight="150"/>
+    <dlg:style dlg:style-id="caption" dlg:font-height="10"/>
   </dlg:styles>
   <dlg:bulletinboard>
-    <dlg:img dlg:id="BrandMark" dlg:style-id="ground" dlg:tab-index="5" dlg:left="8" dlg:top="6" dlg:width="18" dlg:height="18" dlg:src="vnd.sun.star.extension://com.atlasomnia.sidecar.libreoffice/icons/sidecar-deck.png" dlg:scale-image="true"/>
-    <dlg:text dlg:id="Title" dlg:style-id="title" dlg:tab-index="6" dlg:left="30" dlg:top="6" dlg:width="162" dlg:height="16" dlg:value="Sidecar for LibreOffice"/>
-    <dlg:text dlg:id="Subtitle" dlg:style-id="caption" dlg:tab-index="7" dlg:left="30" dlg:top="22" dlg:width="162" dlg:height="11" dlg:value="by Atlas Omnia"/>
-    <dlg:text dlg:id="ThemeBackplate" dlg:style-id="secondary-action" dlg:tab-index="8" dlg:left="122" dlg:top="33" dlg:width="70" dlg:height="19" dlg:value=""/>
-    <dlg:button dlg:id="ThemeToggle" dlg:style-id="secondary-action" dlg:tab-index="4" dlg:left="122" dlg:top="33" dlg:width="70" dlg:height="19" dlg:value="Theme: Dark"/>
-    <dlg:text dlg:id="Connectivity" dlg:style-id="caption" dlg:tab-index="9" dlg:left="8" dlg:top="35" dlg:width="108" dlg:height="13" dlg:value="Not checked"/>
-    <dlg:text dlg:id="Status" dlg:style-id="caption" dlg:tab-index="10" dlg:left="8" dlg:top="53" dlg:width="184" dlg:height="12" dlg:multiline="true" dlg:value="Ready for your message."/>
-    <!-- Hidden by Python until a save fails; no empty reservation in plan_layout. -->
-    <dlg:text dlg:id="ThemeNotice" dlg:style-id="caption" dlg:tab-index="11" dlg:left="8" dlg:top="65" dlg:width="184" dlg:height="22" dlg:multiline="true" dlg:value=""/>
-    <dlg:text dlg:id="TranscriptBackplate" dlg:style-id="backplate" dlg:tab-index="12" dlg:left="8" dlg:top="66" dlg:width="184" dlg:height="88" dlg:value=""/>
-    <dlg:textfield dlg:id="Transcript" dlg:style-id="transcript" dlg:tab-index="3" dlg:left="9" dlg:top="67" dlg:width="182" dlg:height="86" dlg:multiline="true" dlg:readonly="true" dlg:vscroll="true"/>
-    <!-- Nonoverlapping native border/fill strips: Aqua fixed-text siblings
-         cannot safely paint over full-area fixed-text backgrounds. -->
-    <dlg:text dlg:id="ComposerBorderTop" dlg:style-id="backplate" dlg:tab-index="20" dlg:left="8" dlg:top="158" dlg:width="184" dlg:height="1" dlg:value=""/>
-    <dlg:text dlg:id="ComposerBorderBottom" dlg:style-id="backplate" dlg:tab-index="21" dlg:left="8" dlg:top="291" dlg:width="184" dlg:height="1" dlg:value=""/>
-    <dlg:text dlg:id="ComposerBorderLeft" dlg:style-id="backplate" dlg:tab-index="22" dlg:left="8" dlg:top="159" dlg:width="1" dlg:height="132" dlg:value=""/>
-    <dlg:text dlg:id="ComposerBorderRight" dlg:style-id="backplate" dlg:tab-index="23" dlg:left="191" dlg:top="159" dlg:width="1" dlg:height="132" dlg:value=""/>
-    <dlg:text dlg:id="ComposerFillLeft" dlg:style-id="input" dlg:tab-index="24" dlg:left="9" dlg:top="159" dlg:width="4" dlg:height="132" dlg:value=""/>
-    <dlg:text dlg:id="ComposerFillRight" dlg:style-id="input" dlg:tab-index="25" dlg:left="187" dlg:top="159" dlg:width="4" dlg:height="132" dlg:value=""/>
-    <dlg:text dlg:id="ComposerFillTop" dlg:style-id="input" dlg:tab-index="26" dlg:left="13" dlg:top="159" dlg:width="174" dlg:height="4" dlg:value=""/>
-    <dlg:text dlg:id="ComposerFillLabelGap" dlg:style-id="input" dlg:tab-index="27" dlg:left="13" dlg:top="175" dlg:width="174" dlg:height="2" dlg:value=""/>
-    <dlg:text dlg:id="ComposerFillHintGap" dlg:style-id="input" dlg:tab-index="28" dlg:left="13" dlg:top="189" dlg:width="174" dlg:height="1" dlg:value=""/>
-    <dlg:text dlg:id="ComposerFillInputGap" dlg:style-id="input" dlg:tab-index="29" dlg:left="13" dlg:top="246" dlg:width="174" dlg:height="5" dlg:value=""/>
-    <dlg:text dlg:id="ComposerFillActionGap" dlg:style-id="input" dlg:tab-index="30" dlg:left="13" dlg:top="273" dlg:width="174" dlg:height="4" dlg:value=""/>
-    <dlg:text dlg:id="ComposerFillBottom" dlg:style-id="input" dlg:tab-index="31" dlg:left="13" dlg:top="289" dlg:width="174" dlg:height="2" dlg:value=""/>
-    <dlg:text dlg:id="ComposerFillActions" dlg:style-id="input" dlg:tab-index="32" dlg:left="77" dlg:top="251" dlg:width="46" dlg:height="22" dlg:value=""/>
-    <dlg:text dlg:id="ComposerLabel" dlg:style-id="composer-label" dlg:tab-index="15" dlg:left="13" dlg:top="163" dlg:width="174" dlg:height="12" dlg:value="Your message"/>
-    <!-- Adjacent hint cannot intercept pointer input and is never edit content. -->
-    <dlg:text dlg:id="InputHint" dlg:style-id="composer-caption" dlg:tab-index="16" dlg:left="13" dlg:top="177" dlg:width="174" dlg:height="12" dlg:value="Ask Hermes about this document…"/>
-    <dlg:textfield dlg:id="Input" dlg:style-id="input" dlg:tab-index="0" dlg:left="13" dlg:top="190" dlg:width="174" dlg:height="56" dlg:multiline="true" dlg:vscroll="true"/>
-    <dlg:text dlg:id="SendBackplate" dlg:style-id="primary-action" dlg:tab-index="17" dlg:left="123" dlg:top="251" dlg:width="64" dlg:height="22" dlg:value=""/>
-    <dlg:text dlg:id="NewChatBackplate" dlg:style-id="secondary-action" dlg:tab-index="18" dlg:left="13" dlg:top="251" dlg:width="64" dlg:height="22" dlg:value=""/>
-    <dlg:button dlg:id="Send" dlg:style-id="primary-action" dlg:tab-index="1" dlg:left="123" dlg:top="251" dlg:width="64" dlg:height="22" dlg:value="Send"/>
-    <dlg:button dlg:id="NewChat" dlg:style-id="secondary-action" dlg:tab-index="2" dlg:left="13" dlg:top="251" dlg:width="64" dlg:height="22" dlg:value="New chat"/>
-    <dlg:text dlg:id="ComposerHelp" dlg:style-id="composer-caption" dlg:tab-index="19" dlg:left="13" dlg:top="277" dlg:width="174" dlg:height="12" dlg:value="Enter sends · Shift+Enter adds a line"/>
+    <dlg:img dlg:id="BrandMark" dlg:tab-index="2" dlg:left="6" dlg:top="5" dlg:width="13" dlg:height="13" dlg:src="vnd.sun.star.extension://com.atlasomnia.sidecar.libreoffice/icons/sidecar-deck.png" dlg:scale-image="true"/>
+    <dlg:text dlg:id="Title" dlg:style-id="title" dlg:tab-index="3" dlg:left="23" dlg:top="4" dlg:width="131" dlg:height="10" dlg:value="Sidecar for LibreOffice"/>
+    <dlg:text dlg:id="Subtitle" dlg:style-id="caption" dlg:tab-index="4" dlg:left="23" dlg:top="14" dlg:width="131" dlg:height="8" dlg:value="by Atlas Omnia"/>
+    <dlg:text dlg:id="Status" dlg:style-id="caption" dlg:tab-index="1" dlg:left="6" dlg:top="24" dlg:width="148" dlg:height="32" dlg:multiline="true" dlg:value="Checking Hermes…"/>
+    <dlg:button dlg:id="OpenSidecar" dlg:tab-index="0" dlg:left="6" dlg:top="60" dlg:width="110" dlg:height="16" dlg:default="true" dlg:value="Open Sidecar"/>
   </dlg:bulletinboard>
 </dlg:window>
