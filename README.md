@@ -4,12 +4,21 @@ by Atlas Omnia
 
 Hermes reads and edits the Calc, Writer and Impress documents you already have open in LibreOffice, and, once you turn it on, you can chat with it from a LibreOffice sidebar panel (the sidebar chat is off by default). There is no upload step and no copy-paste; what Hermes reads from a document goes, with your chat, to the model Hermes is configured with. Supported edits are one named undo step (`Hermes: …`), and Hermes can undo its own changes from the chat; `calc_activate_sheet` and `calc_recalculate` are not undoable, and some Impress undo restores text without its mixed formatting (see *Undo in Impress*).
 
+![Calc with the Sidecar sidebar: Hermes built a summary table and a column chart from the sales data, and its reply is in the panel](docs/assets/screenshots/calc-summary-chart.png)
+
+*Calc: one sidebar message built the D1:E4 summary (formulas over the sales data, dark-blue header) and the chart, then read the values back. Real chat with the model configured in Hermes, on the made-up demo data in `docs/fixtures/`.*
+
+| Writer | Impress (Dark theme) |
+|---|---|
+| ![Writer with the Sidecar sidebar: Hermes added a sentence written from the spreadsheet's summary](docs/assets/screenshots/writer-from-sheet.png) | ![Impress with the Sidecar sidebar in its Dark theme: Hermes added slide 2, Units by region, from the spreadsheet](docs/assets/screenshots/impress-new-slide-dark.png) |
+| A sentence written from the sheet's summary, added as its own paragraph. | A new slide built from the sheet, highest region first. |
+
 Two parts, both in this repository:
 
 - a **LibreOffice extension** (`extension/`, built into `dist/sidecar-libreoffice.oxt`, identifier `com.atlasomnia.sidecar.libreoffice`) that runs Python-UNO inside LibreOffice, marshals document work onto LibreOffice's main thread, and listens only on `127.0.0.1:8660` behind a pairing token;
 - a stdlib-only **Hermes plugin** (`plugin/`, id `atlas-sidecar-libreoffice`, toolset `sidecar-libreoffice`) that talks to it over loopback HTTP, can run the sidebar's chat endpoint on `127.0.0.1:8661` (off by default), and spawns no shell commands.
 
-Platforms: macOS and Windows. Linux is untested. Read the *Risk disclosures* below before you install.
+Platforms: macOS and Windows. On Linux only the unit tests run (in CI). Read the *Risk disclosures* below before you install.
 
 ## Install
 

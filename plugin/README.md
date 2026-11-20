@@ -4,9 +4,13 @@ by Atlas Omnia
 
 Hermes reads and edits the Calc, Writer and Impress documents you already have open in LibreOffice, and, once you turn it on, you can chat with it from a LibreOffice sidebar panel (the sidebar chat is off by default). Supported edits are one named undo step (`Hermes: …`), and Hermes can undo its own changes from the chat; `calc_activate_sheet` and `calc_recalculate` are not undoable, and some Impress undo restores text without its mixed formatting.
 
+![Calc with the Sidecar sidebar: Hermes built a summary table and a column chart from the sales data](https://raw.githubusercontent.com/AtlasOmnia/sidecar-libreoffice/main/docs/assets/screenshots/calc-summary-chart.png)
+
+*A real sidebar chat in Calc on made-up demo data. More screenshots (Writer, Impress in the Dark theme) are in the repository's README.*
+
 This directory is the Hermes plugin (`atlas-sidecar-libreoffice`, toolset `sidecar-libreoffice`, 55 tools, stdlib only). It talks to a companion **LibreOffice extension** (`.oxt`) that you build from the same repository and install in LibreOffice yourself; Hermes does not install it. The full documentation is the repository's [README](../README.md); security notes are in [SECURITY.md](../SECURITY.md).
 
-Platforms: macOS and Windows. Linux is untested.
+Platforms: macOS and Windows. On Linux only the unit tests run (in CI).
 
 ## Install
 

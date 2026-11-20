@@ -4,6 +4,8 @@ All notable changes to Sidecar for LibreOffice are documented here. The format f
 
 ## [Unreleased]
 
+- Docs: README screenshots of the sidebar in Calc, Writer and Impress (`docs/assets/screenshots/`); the extension and plugin code are unchanged from v0.4.0.
+
 ## [0.4.0] - 2026-11-19
 
 First public release. Workflow parity with the Sidecar tools for Microsoft Excel, Word and PowerPoint (baseline `7a565c9`): 55 tools, up from 31. Each change has stale-target checks, a truthful uncertain or partial outcome and an undo contract, and was accepted natively on LibreOffice 26.8.2.2 in disposable profiles. `docs/sidecar-parity.md` maps every Sidecar tool to its LibreOffice counterpart.
