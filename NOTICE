@@ -1,1 +1,14 @@
 Sidecar for LibreOffice — Copyright 2026 Atlas Omnia
+
+The Hermes plugin of this project serves the Sidecar window's web page from plugin/sidebar/. That page includes the following third-party software, unmodified, in plugin/sidebar/vendor/:
+
+marked 15.0.12 (https://github.com/markedjs/marked)
+Copyright (c) 2018+, MarkedJS (https://github.com/markedjs/)
+Copyright (c) 2011-2018, Christopher Jeffrey (https://github.com/chjj/)
+Licensed under the MIT License. The full licence text, which also carries the licence of the original Markdown (Copyright (c) 2004, John Gruber), is in plugin/sidebar/vendor/marked.LICENSE.md.
+
+DOMPurify 3.4.12 (https://github.com/cure53/DOMPurify)
+Copyright (c) Cure53 and other contributors
+Dual-licensed under the Apache License 2.0 and the Mozilla Public License 2.0; used here under the Apache License 2.0. The licence text is in plugin/sidebar/vendor/dompurify.LICENSE.
+
+The page's stylesheets omnia-tokens.css, omnia-pane.css and taskpane.css are copies of files from Sidecar (https://github.com/AtlasOmnia/sidecar), Copyright 2026 Atlas Omnia, Apache License 2.0; plugin/sidebar/UPSTREAM.json pins their source.

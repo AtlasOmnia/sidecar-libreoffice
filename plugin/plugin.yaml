@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Atlas Omnia
 name: atlas-sidecar-libreoffice
-version: 0.4.0
-description: "Sidecar for LibreOffice by Atlas Omnia: 55 tools for the Calc, Writer and Impress documents open in LibreOffice, through the companion extension's token-checked listener on 127.0.0.1:8660, plus an optional token-checked sidebar chat endpoint inside the Hermes gateway (off by default; chat_port 8661 turns it on) that forwards to your Hermes API server."
+version: 0.5.0
+description: "Sidecar for LibreOffice by Atlas Omnia: 55 tools for the Calc, Writer and Impress documents open in LibreOffice, through the companion extension's token-checked listener on 127.0.0.1:8660, plus an optional chat endpoint inside the Hermes gateway (off by default; chat_port 8661 turns it on) that serves the Sidecar window's web page and its API on loopback and forwards its chats to your Hermes API server. The plugin starts no process; the LibreOffice extension opens the window in a browser when you click Open Sidecar."
 author: AtlasOmnia
 license: Apache-2.0
 homepage: https://github.com/AtlasOmnia/sidecar-libreoffice
@@ -78,7 +78,7 @@ config_schema:
     type: secret
     env: API_SERVER_KEY
     required: false
-    description: "Optional, sidebar chat only: the key of your Hermes API server (the same API_SERVER_KEY the server uses). Read through Hermes, kept in memory, never sent to LibreOffice or logged."
+    description: "Optional, sidebar chat only: the key of your Hermes API server (the same API_SERVER_KEY the server uses). Read through Hermes, kept in memory, never sent to LibreOffice or the browser, never logged."
   bridge_port:
     type: int
     default: 8660
@@ -86,7 +86,7 @@ config_schema:
   chat_port:
     type: int
     default: 0
-    description: "Sidebar chat endpoint inside the Hermes gateway: 0 (the default) keeps it off; 8661 is the port the LibreOffice panel calls. Any other port needs the same HERMES_LO_CHAT_PORT in LibreOffice. Read the README's Turn on the sidebar chat first."
+    description: "Sidebar chat endpoint inside the Hermes gateway, which also serves the Sidecar window: 0 (the default) keeps it off; 8661 is the port the LibreOffice panel calls. Any other port needs the same HERMES_LO_CHAT_PORT in LibreOffice. Read the README's Turn on the sidebar chat and Risk disclosures first."
   api_server_port:
     type: int
     default: 8642

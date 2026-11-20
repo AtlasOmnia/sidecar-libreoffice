@@ -5,7 +5,7 @@ Sidecar does in Microsoft Office.
 
 ## Status (first version, 0.3.0)
 
-Historical note: this page describes the first sidebar (0.3.0); its *Not verified* and *Remaining work* lists are as of 0.3.0. The current panel, and what has been run with it since, are described in the README (*Chat sidebar*, *Tested versions*).
+Historical note: this page describes the first sidebar (0.3.0); its *Not verified* and *Remaining work* lists are as of 0.3.0. In 0.5.0 the native chat panel described here is replaced: the sidebar panel becomes a launcher with an **Open Sidecar** button, and the conversation moves to the Sidecar window, a web page served by the plugin and shown in a browser (README, *Sidebar chat* and *Which browser*; the protocol is `docs/web-protocol.md`). The decisions below on credentials and the tool fence still hold; *One reply per message* holds for 0.5.0, while *Plain text* does not: the Sidecar window renders Markdown.
 
 Built:
 

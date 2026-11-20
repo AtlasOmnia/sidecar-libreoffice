@@ -11,6 +11,19 @@ SOURCE_SUFFIXES = {".py", ".xcu", ".xml", ".yaml", ".sh"}
 EXCLUDED_PARTS = {".git", "dist", "__pycache__"}
 SPDX = "SPDX-License-Identifier: Apache-2.0"
 COPYRIGHT = "Copyright 2026 Atlas Omnia"
+# The Sidecar page's own files carry the header too. Vendored libraries and the three Omnia
+# stylesheets pinned in plugin/sidebar/UPSTREAM.json stay byte-identical to upstream (no header).
+SIDEBAR = ("plugin", "sidebar")
+SIDEBAR_SUFFIXES = {".js", ".css", ".html", ".svg"}
+UPSTREAM_COPIES = {"omnia-tokens.css", "omnia-pane.css", "taskpane.css"}
+
+
+def needs_header(relative: Path) -> bool:
+    if relative.suffix in SOURCE_SUFFIXES:
+        return True
+    parts = relative.parts
+    return (parts[:2] == SIDEBAR and relative.suffix in SIDEBAR_SUFFIXES and "vendor" not in parts[2:]
+            and relative.name not in UPSTREAM_COPIES)
 
 
 def tracked_files() -> list[Path]:
@@ -27,7 +40,7 @@ class LicenseHeaderTests(unittest.TestCase):
             self.skipTest("not a git checkout")
         missing = []
         for path in files:
-            if not path.is_file() or path.suffix not in SOURCE_SUFFIXES:
+            if not path.is_file() or not needs_header(path.relative_to(ROOT)):
                 continue
             if any(part in EXCLUDED_PARTS for part in path.relative_to(ROOT).parts):
                 continue
@@ -47,6 +60,22 @@ class LicenseHeaderTests(unittest.TestCase):
             "Sidecar for LibreOffice — Copyright 2026 Atlas Omnia",
             (ROOT / "NOTICE").read_text(encoding="utf-8"),
         )
+
+    def test_notice_names_the_vendored_libraries_with_their_licences(self):
+        notice = (ROOT / "NOTICE").read_text(encoding="utf-8")
+        for line in ("marked 15.0.12", "Copyright (c) 2011-2018, Christopher Jeffrey", "MIT License",
+                     "plugin/sidebar/vendor/marked.LICENSE.md", "DOMPurify 3.4.12", "Cure53",
+                     "used here under the Apache License 2.0", "plugin/sidebar/vendor/dompurify.LICENSE"):
+            self.assertIn(line, notice)
+
+    def test_header_rule_covers_the_pages_own_files_but_not_upstream_copies(self):
+        self.assertTrue(needs_header(Path("plugin/sidebar/app.js")))
+        self.assertTrue(needs_header(Path("plugin/sidebar/index.html")))
+        self.assertTrue(needs_header(Path("plugin/sidebar/sidecar-lo.css")))
+        self.assertTrue(needs_header(Path("plugin/sidebar/assets/icon.svg")))
+        self.assertFalse(needs_header(Path("plugin/sidebar/vendor/purify.js")))
+        self.assertFalse(needs_header(Path("plugin/sidebar/omnia-pane.css")))
+        self.assertFalse(needs_header(Path("docs/assets/screenshots/x.css")))
 
 
 class UntrackedDirectoryTests(unittest.TestCase):

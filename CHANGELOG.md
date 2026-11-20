@@ -2,9 +2,44 @@
 
 All notable changes to Sidecar for LibreOffice are documented here. The format follows Keep a Changelog.
 
-## [Unreleased]
+## [0.5.0] - Unreleased
 
-- Docs: README screenshots of the sidebar in Calc, Writer and Impress (`docs/assets/screenshots/`); the extension and plugin code are unchanged from v0.4.0.
+The sidebar chat moves into the **Sidecar window**: the chat of Sidecar for Excel, served by the plugin on loopback and opened beside LibreOffice in a browser when you click **Open Sidecar** in the Sidecar panel. The 55 document tools, the document bridge on port 8660, the tool fence and the run-ownership guarantees of 0.4.0 are unchanged. The sidebar chat is still off by default.
+
+<!-- D-FINAL: add a "Tested" paragraph with exactly what the 0.5.0 gates ran (browsers and versions, macOS, Windows, a real gateway and model), and nothing more. -->
+Tested: not yet as a release. The launch method was tried with prototype code in design spikes (a Chrome 158 app window and a Safari 27 tab on macOS 27.2.1; Edge 158 on Windows 11).
+
+### Added
+- **The Sidecar window.** **Open Sidecar** in the Sidecar panel (or the Tools menu) opens the Sidecar chat for that document: the Sidecar for Excel markup and its three Omnia stylesheets, byte-identical to the pinned upstream files; formatted replies (headings, lists, tables, code, quotes); a status line, **Stop** and **New chat**; **Settings** with **Palette** and **Appearance**, where **Auto** follows LibreOffice's light or dark appearance. One window per document; a second click brings it to the front (macOS app window) or says it is already open. Closing the document closes its window. <!-- D-FINAL: name the Tools menu command as lane C1 ships it. -->
+- **Which browser.** On macOS the extension starts Google Chrome, Microsoft Edge, Brave Browser or Chromium (the first found in `/Applications` or `~/Applications`) as an app window with its own empty profile in `~/Library/Caches/Sidecar for LibreOffice/browser/`, placed beside the LibreOffice window, and asks it to quit when LibreOffice quits. Without one of them, and on Windows in 0.5.0, the page opens as a normal tab in the default browser. Linux is not supported for the window.
+- **Stop.** The window's **Stop** asks Hermes to stop the reply through the run's own worker and reports *Stopped. Check the document for changes made before stopping.* once Hermes confirms it, or that the outcome is not known. Closing or reloading the window, and 90 seconds without a request from the window during a reply, stop the reply too.
+- Plugin routes on the chat endpoint (`docs/web-protocol.md`): `/launcher/*` for the extension, `/ui/*` for the page's files, `/api/*` for the page.
+- `plugin/sidebar/`: the page, its `SHA256SUMS`, `UPSTREAM.json` (pins of the Omnia stylesheets) and `vendor/` with marked 15.0.12 and DOMPurify 3.4.12, unminified, with their licences and `VENDOR.json` (npm registry origin and hashes). `scripts/sidebar_sums.py --check` and `scripts/verify_vendor.py` (a separate CI job) check them. `NOTICE` names both libraries.
+- `docs/web-protocol.md`: the frozen protocol between the plugin, the extension and the page, with the launcher channel's test vectors.
+
+### Changed
+- The Sidecar panel in the LibreOffice sidebar is now a launcher: a status line and **Open Sidecar**. The native transcript, input box, theme toggle and connectivity line of 0.4.0 are removed; the conversation is in the Sidecar window.
+- The panel's messages say what to do: *Chat is off in Hermes.*, *Hermes is not paired with LibreOffice yet.*, *Something other than your Hermes answered on port 8661.*, *The Sidecar window did not connect…*, *Sidecar is already open…*. The README sections they name are *Sidebar chat*, *Pairing* and *Which browser*.
+- Replies are formatted Markdown instead of plain text, shown once when finished (no word-by-word streaming in 0.5.0).
+- README, plugin README, `SECURITY.md`, `plugin/after-install.md`, the catalog template, `plugin.yaml` and the extension's description: the Sidecar window, which browser, the upgrade from 0.4.0, and the new disclosures below. Version 0.5.0.
+
+### Security
+- **The 0.5.0 extension never sends the pairing token to the chat endpoint.** It opens a short channel with an HMAC-SHA256 challenge-response keyed by the token, checks the endpoint's proof before sending anything else, and MACs every later call and answer with a counter. A program on port 8661 that does not know the token learns nothing about it and cannot make Sidecar open a page. The legacy `/chat` and `/health` routes stay unchanged for 0.4.0 extensions through 0.5.x (deprecated, to be removed in 0.6.0), and a 0.4.0 extension still sends the token there, with the old known limit.
+- **One-time launch code, session in memory.** The page gets a one-time code (32 random bytes, 30 seconds, single use, stored hashed) through an owner-only launch file, so the code is never on a process command line on any platform, and exchanges it for a session token it keeps in script memory only. No cookies. A second use of a code within its 30 seconds closes the session made with it and stops its reply. At most 8 sessions, 12 hours idle.
+- **Routes are separated by credential**: each route family refuses the other families' credential headers; `/api/*` needs the exact `Host`, the page's exact `Origin` on POST and same-origin fetch metadata; static files are served only when listed in `SHA256SUMS` with matching bytes, with a strict content security policy (no remote source, no inline script, Trusted Types), `X-Frame-Options: DENY`, COOP and CORP.
+- **Strict reply rendering.** DOMPurify runs with an allow-list (no forms, buttons, styles, classes, ids or images); links become copy-only controls; nothing in the page navigates or opens a window.
+- **Off still means off.** With `chat_port` 0 the extension starts no process; a browser is started only by a click on **Open Sidecar** after the plugin accepted the launch. No bridge operation starts a browser.
+- **Disclosures (rule 13).** The README, plugin README, `SECURITY.md` and the catalog description now say that the chat endpoint serves a web page and its API; that the extension starts a browser (or opens the default browser) on that click, never reads your browser profiles, cookies or keychain, and runs no other program and no shell; that the plugin starts no process; what a normal browser tab exposes (your browser extensions can read the page; the history keeps the spent one-time link); the dedicated profile's limits on managed computers; and the memory a window costs. The sentence that the extension and the plugin "run no shell commands" is replaced by these.
+- **Accepted limitation, unchanged.** When the plugin is disabled or reloaded, Hermes removes its tool restriction as soon as the unload callback returns; a sidebar chat that was not confirmed stopped keeps running without the restriction, with your full Hermes tools. The Sidecar window does not change this; the fix still needs a Hermes-side per-run tool restriction. On unload the plugin now also ends every Sidecar session and answers waiting page requests once.
+
+### Removed
+- The native chat transcript, input, **Theme: Dark** / **Theme: Light** toggle and connectivity line in the sidebar panel. <!-- D-FINAL: say whether the saved 0.4.0 theme is read once as the initial appearance, as lane C1 ships it. -->
+
+### Known limits
+- Windows 0.5.0 has no app window: the page opens as a normal tab in the default browser. Linux: no Sidecar window.
+- On macOS the dedicated browser's Dock icon can stay until LibreOffice quits; a hidden window can close up to about a minute late; if LibreOffice crashes the window stays open.
+- A reconnected window does not show earlier messages. No live text or tool rows during a reply.
+- Docs: README screenshots of the sidebar in Calc, Writer and Impress (`docs/assets/screenshots/`) show the native panel of 0.4.0. <!-- D-FINAL: replace them or keep this line. -->
 
 ## [0.4.0] - 2026-11-19
 

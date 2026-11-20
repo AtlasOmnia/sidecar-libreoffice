@@ -95,13 +95,17 @@ class ManifestRegistrationTests(unittest.TestCase):
         manifest = (ROOT / "plugin" / "plugin.yaml").read_text(encoding="utf-8")
         extension = (ROOT / "extension" / "description.xml").read_text(encoding="utf-8")
         catalog = (ROOT / "catalog" / "atlas-sidecar-libreoffice.yaml").read_text(encoding="utf-8")
-        self.assertIn("version: 0.4.0", manifest)
-        self.assertIn('<version value="0.4.0"/>', extension)
-        self.assertIn('version: "0.4.0"', catalog)
+        self.assertIn("version: 0.5.0", manifest)
+        self.assertIn('<version value="0.5.0"/>', extension)
+        self.assertIn('version: "0.5.0"', catalog)
+        self.assertIn("/tree/v0.5.0#readme", catalog)
         # The text shipped inside the .oxt names the same version.
-        self.assertTrue((ROOT / "extension" / "README.txt").read_text(encoding="utf-8").startswith("Sidecar for LibreOffice 0.4.0 "))
+        self.assertTrue((ROOT / "extension" / "README.txt").read_text(encoding="utf-8").startswith("Sidecar for LibreOffice 0.5.0 "))
+        # The bridge's Server header is not owned by the docs lane; it still names 0.4 (see the 0.5.0 lane D report).
         self.assertIn('server_version = "SidecarLibreOfficeBridge/0.4"',
                       (ROOT / "extension" / "python" / "hermes_bridge.py").read_text(encoding="utf-8"))
+        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertRegex(changelog, r"\n## \[0\.5\.0\] - (Unreleased|\d{4}-\d{2}-\d{2})\n")
 
     def test_shipped_files_name_no_private_host_or_home_path(self):
         """No private host name, home path or volume path in shipped source."""
@@ -115,6 +119,75 @@ class ManifestRegistrationTests(unittest.TestCase):
                         if pattern.search(line) and "pattern = re.compile" not in line:
                             hits.append(f"{path.relative_to(ROOT)}:{number}")
         self.assertEqual(hits, [])
+
+
+DISCLOSURE_FILES = ("README.md", "plugin/README.md", "SECURITY.md", "catalog/atlas-sidecar-libreoffice.yaml")
+CURRENT_STATE_FILES = DISCLOSURE_FILES + ("plugin/after-install.md", "plugin/plugin.yaml", "extension/README.txt")
+# Every file lane D owns may carry a D-FINAL marker during the draft; none may once 0.5.0 is dated.
+LANE_D_FILES = CURRENT_STATE_FILES + ("CHANGELOG.md", "NOTICE", "plugin/NOTICE", "AGENTS.md", "CONTRIBUTING.md",
+                                      "extension/description.xml", "docs/sidebar-design.md", "docs/sidecar-parity.md",
+                                      "docs/demo.md", "docs/workflow-acceptance.md")
+
+
+def flat(name: str) -> str:
+    return " ".join((ROOT / name).read_text(encoding="utf-8").split())
+
+
+def released() -> bool:
+    return "## [0.5.0] - Unreleased" not in (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+
+
+class WindowDisclosureTests(unittest.TestCase):
+    """Catalog rule 13: what the Sidecar window does on the user's machine is stated in every disclosure."""
+
+    def test_every_disclosure_names_the_web_page_the_browser_and_what_a_tab_exposes(self):
+        facts = (
+            "also serves the Sidecar web page",            # the chat endpoint serves files and an API
+            "checked against a hash list on every request",
+            "Open Sidecar",                                 # the only trigger for a browser start
+            "cookies or keychain",                          # never read
+            "The extension runs no other program and no shell.",
+            "The plugin starts no process.",
+            "one-time",                                     # launch code
+            "session token",
+            "challenge-response",                           # R18: the 0.5.0 extension never sends the token
+            "0.4.0 extension",                              # the legacy routes keep the old limit
+            "browser extensions can read the page",         # normal tab
+            "history keeps the",                            # spent one-time link
+            "managed",                                      # policies on the dedicated profile
+            "MB",                                           # memory per window
+            "Linux",
+        )
+        for name in DISCLOSURE_FILES:
+            text = flat(name)
+            for fact in facts:
+                with self.subTest(file=name, fact=fact):
+                    self.assertTrue(fact in text, f"{name} must say {fact!r}")
+
+    def test_no_current_document_still_claims_no_shell_commands(self):
+        for name in CURRENT_STATE_FILES:
+            text = flat(name).lower()
+            for claim in ("no shell commands", "spawns no shell", "no browser is embedded"):
+                with self.subTest(file=name, claim=claim):
+                    self.assertNotIn(claim, text)
+
+    def test_readme_has_the_sections_the_panel_texts_point_to(self):
+        """docs/web-protocol.md section 8.2 panel texts say 'See README ▸ <section>'."""
+        import re
+        protocol = (ROOT / "docs" / "web-protocol.md").read_text(encoding="utf-8")
+        named = set(re.findall(r"README ▸ ([A-Z][a-z]+(?: [a-z]+)*)", protocol))
+        self.assertEqual(named, {"Sidebar chat", "Pairing", "Which browser"})
+        headings = {line.lstrip("#").strip() for line in (ROOT / "README.md").read_text(encoding="utf-8").splitlines()
+                    if line.startswith("#")}
+        for section in named:
+            with self.subTest(section=section):
+                self.assertIn(section, headings)
+
+    def test_draft_markers_are_gone_once_the_release_is_dated(self):
+        markers = [name for name in LANE_D_FILES if "D-FINAL" in (ROOT / name).read_text(encoding="utf-8")]
+        if not released():
+            self.skipTest(f"0.5.0 is unreleased; D-FINAL markers left in: {', '.join(markers) or 'none'}")
+        self.assertEqual(markers, [])
 
 
 if __name__ == "__main__":
