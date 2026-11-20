@@ -1,0 +1,43 @@
+{
+  "description": "Third-party files in this folder, copied unchanged from the npm registry tarballs below. Check with scripts/verify_vendor.py.",
+  "packages": [
+    {
+      "name": "marked",
+      "version": "15.0.12",
+      "license": "MIT",
+      "tarball": "https://registry.npmjs.org/marked/-/marked-15.0.12.tgz",
+      "integrity": "sha512-8dD6FusOQSrpv9Z1rdNMdlSgQOIP880DHqnohobOmYLElGEqAL/JvxvuxZO16r4HtjTlfPRDC1hbvxC9dPN2nA==",
+      "files": [
+        {
+          "member": "package/lib/marked.umd.js",
+          "path": "vendor/marked.umd.js",
+          "sha256": "d7931d1cd7bf727dd756c871637edcc9e0f8538003b927368400ec1ee47a9dd9"
+        },
+        {
+          "member": "package/LICENSE.md",
+          "path": "vendor/marked.LICENSE.md",
+          "sha256": "8e3a3f82f59a60958f56ca08f445647c32a4733dc7ca6c2c46f6eb898471ab9c"
+        }
+      ]
+    },
+    {
+      "name": "dompurify",
+      "version": "3.4.12",
+      "license": "MPL-2.0 OR Apache-2.0 (used under Apache-2.0)",
+      "tarball": "https://registry.npmjs.org/dompurify/-/dompurify-3.4.12.tgz",
+      "integrity": "sha512-zQvGet8Z2sWbQhCmfFz/T5QWH2oBmjnqK3qvOjaqaNLrLEF912WamU+ohnTp0TCep/MFVHpdJuCZEdFOdTnEFg==",
+      "files": [
+        {
+          "member": "package/dist/purify.js",
+          "path": "vendor/purify.js",
+          "sha256": "0cb2ff0eb405f7d675fff04ae98ed277bb9fb10d3df33f29aa8be398e6e9f1b2"
+        },
+        {
+          "member": "package/LICENSE",
+          "path": "vendor/dompurify.LICENSE",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+        }
+      ]
+    }
+  ]
+}

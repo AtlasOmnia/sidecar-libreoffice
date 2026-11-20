@@ -1,0 +1,25 @@
+{
+  "description": "The three Omnia CSS files are byte-identical copies of these upstream files. Check with scripts/verify_vendor.py.",
+  "repository": "AtlasOmnia/sidecar",
+  "commit": "7a565c997be812ad983424a2f1be2f488504397d",
+  "files": [
+    {
+      "path": "omnia-tokens.css",
+      "upstream_path": "excel/src/taskpane/omnia-tokens.css",
+      "sha256": "9d4a6a258b587d6c65c9773521ef84e3442915027e052d1f2e82725242cfc3d5",
+      "git_blob": "e4f4558aa0f5541e0aa43db19f0a47715f40297a"
+    },
+    {
+      "path": "omnia-pane.css",
+      "upstream_path": "excel/src/taskpane/omnia-pane.css",
+      "sha256": "643c460b1dc67bd026b7ea7b5e783e4b03dafae298e71745c3aeaef93fe7445b",
+      "git_blob": "9e00510cbe39dcc8cf0b09b10211ba606e1d9749"
+    },
+    {
+      "path": "taskpane.css",
+      "upstream_path": "excel/src/taskpane/taskpane.css",
+      "sha256": "c2b0d14a9a94b441cdffa9124d4df2e45b3deaabb8174fecc759629f957a1f31",
+      "git_blob": "5a1d6dd3fe4bbfeb2af719d432f093d20775270e"
+    }
+  ]
+}

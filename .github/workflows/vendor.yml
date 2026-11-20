@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Atlas Omnia
+# Origin of the Sidecar window's third-party files: re-derived from the npm registry and the pinned
+# upstream commit. Kept out of the unit suite because it needs the network.
+name: vendor
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "plugin/sidebar/**"
+      - "scripts/sidebar_sums.py"
+      - "scripts/verify_vendor.py"
+      - ".github/workflows/vendor.yml"
+  pull_request:
+    paths:
+      - "plugin/sidebar/**"
+      - "scripts/sidebar_sums.py"
+      - "scripts/verify_vendor.py"
+      - ".github/workflows/vendor.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  vendor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Served files match SHA256SUMS
+        run: python scripts/sidebar_sums.py --check
+      - name: Vendored files match the npm registry; Omnia CSS matches the pinned upstream commit
+        run: python scripts/verify_vendor.py

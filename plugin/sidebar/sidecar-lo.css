@@ -1,0 +1,15 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 Atlas Omnia */
+/* LibreOffice-only additions. The shared pane look stays byte-identical in omnia-tokens.css,
+   omnia-pane.css and taskpane.css; colours come from their tokens only. */
+.desk-connect p:first-child { color: var(--text); font-size: 14px; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+/* Links in replies never navigate: a text button that reveals the address and a Copy link button. */
+.assistant .bubble .reply-link { display: inline; min-width: 0; height: auto; margin: 0; padding: 0; border: 0; border-radius: 2px; background: none; color: var(--accent); font: inherit; line-height: inherit; text-align: inherit; text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; cursor: pointer; }
+.assistant .bubble .reply-link:hover { filter: none; text-decoration-thickness: 2px; }
+.assistant .bubble .reply-link[aria-expanded="true"] { text-decoration-style: dotted; }
+.assistant .bubble .reply-link-panel { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 6px 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+.assistant .bubble .reply-link-url { flex: 1 1 160px; min-width: 0; padding: 0; background: none; overflow-wrap: anywhere; white-space: normal; user-select: all; }
+.assistant .bubble .reply-link-copy { flex: none; min-height: 28px; padding: 2px 8px; border: 1px solid var(--btn-border); border-radius: 6px; background: var(--btn-bg); color: var(--btn-text); font-size: 12px; font-weight: 600; }
+.assistant .bubble .reply-note { color: var(--muted); font-size: 14px; }
