@@ -34,6 +34,13 @@ resend. When polling fails after admission the run is asked to stop with the key
 with and watched for a bounded time; a run that cannot be confirmed stopped stays owned as
 unresolved and is never reported as drained. Only an observed settled state releases a run, once,
 whichever thread observes it first.
+
+One chat turn is ``_claim`` (reserve the session and a slot, synchronously) followed by ``_drive``
+(create the run and follow it to settlement, on ONE thread). ``chat()`` runs both on the request
+thread; ``begin_turn()`` runs ``_claim`` on the caller's thread and starts one worker per run that
+runs ``_drive`` and reports a ``TurnOutcome``. A user Stop only sets ``stop_requested``; the thread
+driving the run asks Hermes to stop it and reports the ``user`` outcome. Extra routes are added
+with ``add_route_handler`` and see each request before the built-in ``/health`` and ``/chat``.
 """
 from __future__ import annotations
 
@@ -90,6 +97,8 @@ _MAX_KEY_LENGTH = 4096
 OUTCOME_UNCERTAIN = ("It is not known whether Hermes carried out this request or which changes it made. "
                      "Check the document before you send it again; do not resend edits blindly.")
 PLUGIN_TURNED_OFF = "the reply was stopped because the LibreOffice plugin was turned off"
+USER_STOPPED = "Stopped. Check the document for changes made before stopping."
+TURN_WORKER_FAILED = "the chat endpoint could not start this reply; try again shortly"
 
 
 class SecretUnavailable(Exception):
@@ -146,6 +155,41 @@ class _NotSent(ChatError):
     """The API server could not be reached at all: the request was never sent."""
 
 
+class ChatStopped(ChatError):
+    """The user asked to stop this reply and the run was seen to settle (or was never sent).
+    Not a failure: it carries ``USER_STOPPED`` and status 200."""
+
+    def __init__(self) -> None:
+        super().__init__(200, USER_STOPPED)
+
+
+class TurnOutcome:
+    """How one turn started with ``begin_turn`` ended. ``kind`` is one of ``completed`` (``text``
+    is the reply), ``user`` (stopped by the user; ``text`` is ``USER_STOPPED``), ``uncertain``
+    (``OUTCOME_UNCERTAIN``), ``turned_off`` (``PLUGIN_TURNED_OFF``) or ``error`` (``text`` is the
+    user-safe message). ``status`` is the HTTP status ``/chat`` would have answered with."""
+
+    __slots__ = ("kind", "status", "text")
+    KINDS = ("completed", "user", "uncertain", "turned_off", "error")
+
+    def __init__(self, kind: str, status: int, text: str) -> None:
+        self.kind, self.status, self.text = kind, status, text
+
+    @classmethod
+    def from_error(cls, exc: ChatError) -> "TurnOutcome":
+        text = str(exc)
+        if isinstance(exc, ChatStopped):
+            return cls("user", exc.status, text)
+        if text == OUTCOME_UNCERTAIN:
+            return cls("uncertain", exc.status, text)
+        if text == PLUGIN_TURNED_OFF:
+            return cls("turned_off", exc.status, text)
+        return cls("error", exc.status, text)
+
+    def __repr__(self) -> str:
+        return f"TurnOutcome({self.kind!r}, {self.status})"
+
+
 class _Run:
     """One run this endpoint asked Hermes for, owned from before its creation request is sent
     until a terminal state is observed (or it was never admitted).
@@ -155,10 +199,11 @@ class _Run:
     one); ``run_id`` is None until Hermes's acknowledgement arrives. ``settled`` is set once, when
     the run is released; ``stopping`` is True while a stop request is in flight, so concurrent
     threads never send two at once; ``close_seen`` marks a run close() has already given a stop
-    thread."""
+    thread; ``stop_requested`` is set by ``request_stop`` (a user Stop) and read only by the thread
+    driving the run, which then stops it with the ``user`` reason."""
 
     __slots__ = ("session_id", "key", "idempotency_key", "body", "run_id", "deadline", "driven", "sent",
-                 "stop_acked", "stop_tried", "stopping", "settled", "close_seen")
+                 "stop_acked", "stop_tried", "stopping", "settled", "close_seen", "stop_requested")
 
     def __init__(self, session_id: str) -> None:
         self.session_id = session_id
@@ -174,6 +219,7 @@ class _Run:
         self.stopping = False
         self.settled = False
         self.close_seen = False
+        self.stop_requested = False
 
 
 def _known_state(value: Any) -> Optional[str]:
@@ -325,6 +371,20 @@ class ChatBridge:
         self._closing = threading.Event()
         self._close_workers = 0                                # close()'s stop threads still running
         self._polls: set[http.client.HTTPConnection] = set()   # status polls in flight
+        self._route_handlers: list[Callable[[Any], bool]] = []
+
+    def add_route_handler(self, handler: Callable[[Any], bool]) -> None:
+        """Add routes from another module. ``handler(request)`` is called with the request handler
+        for every request, before the built-in ``/health`` and ``/chat`` routes and before their
+        pairing-token check; it returns True when it answered the request (with
+        ``request.respond``), False to pass it on. It must do its own authorization. A
+        ``ChatError`` it raises is answered as JSON; any other exception as a plain 500."""
+        with self._lock:
+            self._route_handlers.append(handler)
+
+    def route_handlers(self) -> tuple[Callable[[Any], bool], ...]:
+        with self._lock:
+            return tuple(self._route_handlers)
 
     # -- lifecycle --
     def start(self) -> int:
@@ -512,12 +572,66 @@ class ChatBridge:
     def chat(self, request: dict[str, Any]) -> dict[str, Any]:
         session_id = request["session_id"]
         run = self._claim(session_id)
+        return {"reply": self._drive(run, compose_message(request["message"], request["document"])),
+                "session_id": session_id}
+
+    def _drive(self, run: _Run, content: str) -> str:
+        """Create a claimed run and follow it until it settles, on the calling thread; the only
+        place a claimed run is driven from. Raises ``ChatError`` (``ChatStopped`` for a user
+        Stop)."""
         try:
-            return {"reply": self._ask(compose_message(request["message"], request["document"]), run),
-                    "session_id": session_id}
+            return self._ask(content, run)
         finally:
             if run.driven:   # an unexpected failure: release only what was certainly never sent
                 (self._abandon if run.sent else self._release)(run)
+
+    def begin_turn(self, session_id: str, content: str,
+                   on_done: Callable[[_Run, TurnOutcome], None]) -> _Run:
+        """``_claim`` on the caller's thread (so 409/429/503 are raised here), then start ONE
+        worker that runs ``_drive`` from creation to settlement and calls ``on_done(run,
+        outcome)`` once. If the worker cannot start, nothing was sent: the run is released and
+        ``ChatError(503, TURN_WORKER_FAILED)`` raised. ``content`` is the composed user turn
+        (``compose_message``)."""
+        run = self._claim(session_id)
+        worker = threading.Thread(target=self._turn_worker, args=(run, content, on_done),
+                                  name="HermesLibreOfficeChatTurn", daemon=True)
+        try:
+            worker.start()
+        except Exception:
+            self._release(run)
+            raise ChatError(503, TURN_WORKER_FAILED) from None
+        return run
+
+    def _turn_worker(self, run: _Run, content: str, on_done: Callable[[_Run, TurnOutcome], None]) -> None:
+        try:
+            outcome = TurnOutcome("completed", 200, self._drive(run, content))
+        except ChatError as exc:
+            outcome = TurnOutcome.from_error(exc)
+        except Exception as exc:  # noqa: BLE001 - never let exception text (it can hold a secret) out
+            log.error("libreoffice chat: unhandled failure in a turn (%s)", type(exc).__name__)
+            outcome = TurnOutcome("error", 500, "the chat endpoint failed")
+        try:
+            on_done(run, outcome)
+        except Exception as exc:  # noqa: BLE001
+            log.error("libreoffice chat: a turn's outcome could not be stored (%s)", type(exc).__name__)
+
+    def request_stop(self, run: _Run) -> bool:
+        """A user Stop: only sets ``stop_requested``; the thread driving the run sends the stop
+        and reports the ``user`` outcome. Returns False when the run has already settled."""
+        with self._lock:
+            if run.settled:
+                return False
+            run.stop_requested = True
+            return True
+
+    def session_state(self, session_id: str) -> Optional[str]:
+        """``driven`` (a thread is creating or following its run), ``unresolved`` (it still owns
+        a run nobody watches, whose outcome is not known) or None (free)."""
+        with self._lock:
+            run = self._runs.get(session_id)
+            if run is None:
+                return None
+            return "driven" if run.driven else "unresolved"
 
     def _call(self, key: str, method: str, path: str, payload: Optional[dict[str, Any]] = None,
               *, timeout: float = UPSTREAM_CALL_SECONDS, headers: Optional[dict[str, str]] = None) -> tuple[int, Any]:
@@ -584,6 +698,9 @@ class ChatBridge:
             if self._closed and not run.sent:   # closed before anything was sent: nothing to stop
                 self._release(run)
                 raise ChatError(503, PLUGIN_TURNED_OFF)
+            if run.stop_requested and not run.sent:   # stopped before anything was sent
+                self._release(run)
+                raise ChatStopped()
             limit = self._limit(run.deadline if uncertain_until is None else min(run.deadline, uncertain_until))
             left = limit - time.monotonic()
             if left <= 0:
@@ -680,8 +797,9 @@ class ChatBridge:
             if run.settled:   # another thread saw it settle and released it
                 raise ChatError(503, PLUGIN_TURNED_OFF) if self._closed else ChatError(502, OUTCOME_UNCERTAIN)
             now = time.monotonic()
-            if stop_reason is None and (self._closed or now >= run.deadline):
-                stop_reason, settle_by = ("closed" if self._closed else "timeout"), now + RECONCILE_SECONDS
+            if stop_reason is None and (self._closed or run.stop_requested or now >= run.deadline):
+                stop_reason = "closed" if self._closed else ("user" if run.stop_requested else "timeout")
+                settle_by = now + RECONCILE_SECONDS
             limit = self._limit(settle_by if stop_reason else run.deadline)
             if stop_reason and not run.stop_acked and limit > time.monotonic():
                 answer = self._request_stop(run, min(UPSTREAM_CALL_SECONDS, limit - time.monotonic()))
@@ -725,6 +843,8 @@ class ChatBridge:
             raise ChatError(503, PLUGIN_TURNED_OFF)
         if stop_reason == "lost" or state == "unknown":
             raise ChatError(502, OUTCOME_UNCERTAIN)
+        if stop_reason == "user":
+            raise ChatStopped()
         if stop_reason in ("timeout", "recheck"):
             raise ChatError(504, "Hermes did not finish this reply in time and stopped it; check the document for "
                                  "changes it made before stopping")
@@ -796,28 +916,74 @@ def _handler_for(bridge: ChatBridge) -> type:
         def log_message(self, _format: str, *_args: Any) -> None:
             return None  # replaced by the metadata-only line in _finish
 
-        def _route(self) -> str:
-            return _ROUTES.get((self.command, self.path), "unknown")
+        route_label: Optional[str] = None   # set by an added route handler: its fixed log label
 
-        def _finish(self, status: int, payload: dict[str, Any], start: float) -> None:
-            data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        def _route(self) -> str:
+            return self.route_label or _ROUTES.get((self.command, self.path), "unknown")
+
+        def respond(self, status: int, data: bytes, start: float, *, content_type: str = "application/json",
+                    headers: tuple[tuple[str, str], ...] = (("Cache-Control", "no-store"),)) -> None:
+            """Send one complete response and close the connection (every response here does),
+            then log one metadata-only line: method, ``route_label`` (or the built-in route's
+            label), status and elapsed time. ``headers`` come after Content-Type/-Length."""
             self.close_connection = True
             try:
                 self.connection.settimeout(WRITE_TIMEOUT_SECONDS)
                 self.send_response(status)
-                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(data)))
-                self.send_header("Cache-Control", "no-store")
+                for name, value in headers:
+                    self.send_header(name, value)
                 self.send_header("Connection", "close")
                 self.end_headers()
-                self.wfile.write(data)
+                if self.command != "HEAD":
+                    self.wfile.write(data)
                 self.wfile.flush()
             except OSError:
-                pass  # the panel went away
+                pass  # the client went away
             if status >= 400:
                 _linger_close(self.connection)
-            log.info("libreoffice chat %s %s -> %d in %.1fs", "GET" if self.command == "GET" else "POST",
-                     self._route(), status, time.monotonic() - start)
+            method = self.command if self.command in ("GET", "POST", "HEAD", "OPTIONS") else "OTHER"
+            log.info("libreoffice chat %s %s -> %d in %.1fs", method, self._route(), status,
+                     time.monotonic() - start)
+
+        def _finish(self, status: int, payload: dict[str, Any], start: float) -> None:
+            data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            self.respond(status, data, start)
+
+        def read_body(self, limit: int = MAX_BODY) -> bytes:
+            """The request body, within the request's ONE read deadline: ``Content-Length`` is
+            required (411), 1..``limit`` bytes (413), must arrive in time (408) and whole (400)."""
+            try:
+                length = int(self.headers.get("Content-Length", ""))
+            except ValueError:
+                raise ChatError(411, "Content-Length is required") from None
+            if not 0 < length <= limit:
+                raise ChatError(413, "request body is empty or too large")
+            try:
+                raw = self.rfile.read(length)
+            except (socket.timeout, OSError):
+                raise ChatError(408, "the request body did not arrive in time") from None
+            if len(raw) != length:
+                raise ChatError(400, "request body is truncated")
+            return raw
+
+        def _added_route(self) -> bool:
+            """Offer the request to the routes added with ``add_route_handler``; True when one
+            of them answered it."""
+            for handler in bridge.route_handlers():
+                start = time.monotonic()
+                try:
+                    if handler(self):
+                        return True
+                except ChatError as exc:
+                    self._finish(exc.status, {"ok": False, "error": str(exc)}, start)
+                    return True
+                except Exception as exc:  # noqa: BLE001 - never let exception text (it can hold a secret) out
+                    log.error("libreoffice chat: unhandled failure (%s)", type(exc).__name__)
+                    self._finish(500, {"ok": False, "error": "the chat endpoint failed"}, start)
+                    return True
+            return False
 
         def _authorize(self) -> None:
             if self.headers.get("Origin") is not None:
@@ -843,6 +1009,9 @@ def _handler_for(bridge: ChatBridge) -> type:
                 self._finish(500, {"ok": False, "error": "the chat endpoint failed"}, start)
 
         def do_GET(self) -> None:
+            if self._added_route():
+                return
+
             def health() -> dict[str, Any]:
                 if self.path != "/health":
                     raise ChatError(404, "unknown route")
@@ -850,24 +1019,22 @@ def _handler_for(bridge: ChatBridge) -> type:
             self._run(health)
 
         def do_POST(self) -> None:
+            if self._added_route():
+                return
+
             def chat() -> dict[str, Any]:
                 if self.path != "/chat":
                     raise ChatError(404, "unknown route")
                 if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
                     raise ChatError(415, "Content-Type must be application/json")
-                try:
-                    length = int(self.headers.get("Content-Length", ""))
-                except ValueError:
-                    raise ChatError(411, "Content-Length is required") from None
-                if not 0 < length <= MAX_BODY:
-                    raise ChatError(413, "request body is empty or too large")
-                try:
-                    raw = self.rfile.read(length)
-                except (socket.timeout, OSError):
-                    raise ChatError(408, "the request body did not arrive in time") from None
-                if len(raw) != length:
-                    raise ChatError(400, "request body is truncated")
-                return bridge.chat(parse_request(raw))
+                return bridge.chat(parse_request(self.read_body(MAX_BODY)))
             self._run(chat)
+
+        def _other_method(self) -> None:
+            # Without an added route that answers, the same reply BaseHTTPRequestHandler gives.
+            if not self._added_route():
+                self.send_error(501, "Unsupported method (%r)" % self.command)
+
+        do_HEAD = do_OPTIONS = do_PUT = do_DELETE = do_PATCH = _other_method
 
     return Handler
