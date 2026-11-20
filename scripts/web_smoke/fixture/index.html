@@ -1,0 +1,60 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright 2026 Atlas Omnia -->
+<!-- web_smoke fixture: a minimal page written from docs/web-protocol.md section 7 so the harness
+     can run before the real bundle exists. Not the product page; it has none of the Omnia look. -->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <script src="app.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sidecar for LibreOffice (fixture)</title>
+    <link rel="stylesheet" href="fixture.css" />
+    <script defer src="vendor/marked.umd.js"></script>
+    <script defer src="vendor/purify.js"></script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <h1 id="app-title">Sidecar for LibreOffice</h1>
+        <button id="settings-button" type="button" aria-label="Settings">Settings</button>
+        <p id="connection-status" role="status">Waiting for LibreOffice</p>
+        <span id="privacy-badge">Local bridge</span>
+      </header>
+      <section id="desk-connect" hidden>
+        <p id="desk-connect-text"></p>
+        <p id="desk-connect-code" hidden></p>
+        <button id="desk-connect-button" type="button" hidden>Try again</button>
+      </section>
+      <section class="bridge-strip" aria-label="Document">
+        <span id="bridge-status">LibreOffice connecting</span>
+        <code id="bridge-session-id"></code>
+        <button id="new-chat-button" type="button" disabled>New chat</button>
+      </section>
+      <section id="messages" role="log" aria-live="polite" aria-label="Conversation"></section>
+      <footer class="composer">
+        <textarea id="prompt-input" rows="3" aria-label="Ask Hermes to work in this document"></textarea>
+        <button id="stop-button" type="button" disabled>Stop</button>
+        <button id="send-button" type="button">Send</button>
+      </footer>
+    </main>
+    <dialog id="settings-dialog" aria-labelledby="settings-title">
+      <form method="dialog">
+        <h2 id="settings-title">Settings</h2>
+        <button id="close-settings-button" value="cancel" type="submit" aria-label="Close">Close</button>
+        <fieldset><legend>Palette</legend>
+          <label><input name="omnia-palette" type="radio" value="teal" checked />Teal</label>
+          <label><input name="omnia-palette" type="radio" value="blue" />Blue</label>
+        </fieldset>
+        <fieldset><legend>Appearance</legend>
+          <label><input name="omnia-mode" type="radio" value="auto" checked />Auto</label>
+          <label><input name="omnia-mode" type="radio" value="dark" />Dark</label>
+          <label><input name="omnia-mode" type="radio" value="light" />Light</label>
+        </fieldset>
+        <p>Hermes chat endpoint: <code id="bridge-url">not found</code></p>
+        <p>Document: <code id="document-line">none</code></p>
+        <button id="save-settings-button" value="default" type="submit">Done</button>
+      </form>
+    </dialog>
+  </body>
+</html>

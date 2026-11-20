@@ -140,6 +140,7 @@ class Session:
         self.last_seen = time.monotonic()
         self.turn: Optional[Turn] = None
         self.ended: Optional[str] = None
+        self.inflight = 0
 
     @property
     def chat_label(self) -> str:
@@ -305,7 +306,7 @@ class Stub:
                     if now - when >= t.ended_keep:
                         del self.ended[digest]
                 for session in list(self.sessions.values()):
-                    if now - session.last_seen >= t.idle and not (session.turn and session.turn.inflight):
+                    if now - session.last_seen >= t.idle and not session.inflight:
                         stops.extend(self._end_locked(session, "idle"))
                         continue
                     turn = session.turn
@@ -638,6 +639,16 @@ class Stub:
         if name == "/api/session":
             return self._exchange(req, self._parse(raw or b"", name), start)
         session = self._session(req)
+        with self.cv:
+            session.inflight += 1
+        try:
+            return self._api_session(req, name, target, raw, start, session)
+        finally:
+            with self.cv:   # a request in flight (a long-poll, a 10 s claim recheck) is not idle time
+                session.inflight -= 1
+                session.last_seen = time.monotonic()
+
+    def _api_session(self, req: Any, name: str, target: str, raw: Optional[bytes], start: float, session: Session) -> bool:
         if name == "/api/state":
             with self.cv:
                 view = session.turn.view() if session.turn else None
