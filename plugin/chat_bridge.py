@@ -99,6 +99,9 @@ OUTCOME_UNCERTAIN = ("It is not known whether Hermes carried out this request or
 PLUGIN_TURNED_OFF = "the reply was stopped because the LibreOffice plugin was turned off"
 USER_STOPPED = "Stopped. Check the document for changes made before stopping."
 TURN_WORKER_FAILED = "the chat endpoint could not start this reply; try again shortly"
+# Headers that carry a credential of the 0.5.0 Sidecar window or launcher (docs/web-protocol.md 1.2):
+# the legacy pair (/health, /chat) refuses a request that carries any of them, or any Sec-Fetch-*.
+FOREIGN_TO_LEGACY = ("x-sidecar-session", "x-sidecar-channel", "x-sidecar-counter", "x-sidecar-mac")
 
 
 class SecretUnavailable(Exception):
@@ -200,10 +203,12 @@ class _Run:
     the run is released; ``stopping`` is True while a stop request is in flight, so concurrent
     threads never send two at once; ``close_seen`` marks a run close() has already given a stop
     thread; ``stop_requested`` is set by ``request_stop`` (a user Stop) and read only by the thread
-    driving the run, which then stops it with the ``user`` reason."""
+    driving the run, which then stops it with the ``user`` reason. ``hermes_state`` is the last
+    Runs API state observed for it (None before the first observation); it is display-only."""
 
     __slots__ = ("session_id", "key", "idempotency_key", "body", "run_id", "deadline", "driven", "sent",
-                 "stop_acked", "stop_tried", "stopping", "settled", "close_seen", "stop_requested")
+                 "stop_acked", "stop_tried", "stopping", "settled", "close_seen", "stop_requested",
+                 "hermes_state")
 
     def __init__(self, session_id: str) -> None:
         self.session_id = session_id
@@ -220,6 +225,7 @@ class _Run:
         self.settled = False
         self.close_seen = False
         self.stop_requested = False
+        self.hermes_state: Optional[str] = None
 
 
 def _known_state(value: Any) -> Optional[str]:
@@ -313,6 +319,10 @@ class BoundedHTTPServer(ThreadingHTTPServer):
     """
 
     daemon_threads = True
+    # The listen backlog: a Sidecar window opens several connections at once (page load, state
+    # polls, a long-poll, Stop); the stdlib default of 5 makes some systems reset the surplus
+    # before the accept loop sees them. Connections over ``max_handlers`` are still refused.
+    request_queue_size = 64
 
     def __init__(self, address: tuple[str, int], handler: type, *, max_handlers: int, refusal: bytes) -> None:
         self._slots = threading.BoundedSemaphore(max_handlers)
@@ -353,7 +363,7 @@ class ChatBridge:
                  api_host: str = DEFAULT_API_HOST, api_port: int = DEFAULT_API_PORT, api_prefix: str = "",
                  timeout: float = UPSTREAM_TIMEOUT_SECONDS, fence_active: Callable[[], bool] = lambda: True,
                  max_handlers: Optional[int] = None, read_deadline: Optional[float] = None,
-                 poll_interval: float = 0.25) -> None:
+                 poll_interval: float = 0.25, web_routes: bool = True) -> None:
         if api_host not in ("127.0.0.1", "localhost", "::1"):
             raise ValueError("the Hermes API server must be a loopback address")
         self.port, self.token, self.api_key = port, token, api_key
@@ -372,6 +382,44 @@ class ChatBridge:
         self._close_workers = 0                                # close()'s stop threads still running
         self._polls: set[http.client.HTTPConnection] = set()   # status polls in flight
         self._route_handlers: list[Callable[[Any], bool]] = []
+        self._close_hooks: list[tuple[Callable[[], None], Callable[[float], None]]] = []
+        # Called (outside the lock, on the thread following the run) when a run's observed Runs
+        # API state changes; set by the web routes. Display-only: it never affects ownership.
+        self.run_state_listener: Optional[Callable[[_Run], None]] = None
+        self.web_routes = web_routes
+        self.web: Any = None
+
+    def add_close_hook(self, begin: Callable[[], None], end: Callable[[float], None]) -> None:
+        """Hooks for routes defined in other modules. ``begin()`` runs once ingress is closed
+        (``closed`` is True), before the listener shuts down and before any stop is sent; it must
+        not block. ``end(seconds_left)`` runs just before ``close()`` returns with what is left of
+        its budget (0 on an event-loop thread); it may wait at most that long. Both run outside the
+        lock, on every ``close()`` call, so they must be idempotent; their exceptions are logged
+        by type only."""
+        with self._lock:
+            self._close_hooks.append((begin, end))
+
+    def _run_close_hooks(self, stage: int, *args: Any) -> None:
+        with self._lock:
+            hooks = [hook[stage] for hook in self._close_hooks]
+        for hook in hooks:
+            try:
+                hook(*args)
+            except Exception as exc:  # noqa: BLE001 - unload must go on; never log exception text
+                log.error("libreoffice chat: a close hook failed (%s)", type(exc).__name__)
+
+    def _note_state(self, run: _Run, state: Optional[str]) -> None:
+        """Record the last observed Runs API state of a run (display-only) and tell the listener
+        when it changed. Never called with the lock held."""
+        if state is None or state == run.hermes_state:
+            return
+        run.hermes_state = state
+        listener = self.run_state_listener
+        if listener is not None:
+            try:
+                listener(run)
+            except Exception as exc:  # noqa: BLE001 - a display hook never breaks a run's follow-up
+                log.error("libreoffice chat: a run state listener failed (%s)", type(exc).__name__)
 
     def add_route_handler(self, handler: Callable[[Any], bool]) -> None:
         """Add routes from another module. ``handler(request)`` is called with the request handler
@@ -388,6 +436,11 @@ class ChatBridge:
 
     # -- lifecycle --
     def start(self) -> int:
+        if self.web_routes and self.web is None and not self._closed:
+            # The Sidecar window routes (web_api.py), added after any handler a caller added
+            # before start(). Outside the lock: attaching registers a route and a close hook.
+            from .web_api import attach as attach_web
+            self.web = attach_web(self)
         with self._lock:
             if self._closed:
                 raise RuntimeError("a closed chat endpoint cannot be started again")
@@ -444,6 +497,7 @@ class ChatBridge:
             polls = list(self._polls)                         # started before close: not budget-bound
             self._lock.notify_all()
         self._closing.set()
+        self._run_close_hooks(0)   # web sessions, codes and channels end; parked long-polls answer
         if server is not None:
             server.shutdown()
             server.server_close()
@@ -465,6 +519,7 @@ class ChatBridge:
                 timer.start()
             else:
                 self._cut_off(polls)
+        self._run_close_hooks(1, 0.0 if on_loop else max(0.0, deadline - time.monotonic()))
         if remaining:
             log.warning("libreoffice chat endpoint closed with %d run(s) not confirmed stopped; they may still "
                         "be running%s", remaining,
@@ -622,6 +677,7 @@ class ChatBridge:
             if run.settled:
                 return False
             run.stop_requested = True
+            self._lock.notify_all()   # wake the thread following the run: the stop is sent now
             return True
 
     def session_state(self, session_id: str) -> Optional[str]:
@@ -723,6 +779,7 @@ class ChatBridge:
             if status in (200, 202) and isinstance(run_id, str) and RUN_ID_RE.fullmatch(run_id):
                 with self._lock:
                     run.run_id = run_id
+                self._note_state(run, _known_state(value))
                 return
             if uncertain_until is None:
                 if status not in (0, 200, 202):   # the API server answered with an error: it admitted nothing
@@ -823,14 +880,24 @@ class ChatBridge:
                 self._pause(min(delay, max(0.0, self._limit(settle_by) - time.monotonic())))
                 delay = min(delay * 2, 4 * self.poll_interval)
                 continue
+            self._note_state(run, state)
             if state in _SETTLED_STATES:
                 return self._settled(run, state, value, stop_reason)
             if stop_reason or self._closed:
                 self._pause(min(self.poll_interval, max(0.0, self._limit(settle_by if stop_reason else run.deadline)
                                                         - time.monotonic())))
             else:
-                self._closing.wait(min(delay, max(0.0, run.deadline - time.monotonic())))
+                self._wait_unless_stopped(run, min(delay, max(0.0, run.deadline - time.monotonic())))
                 delay = min(delay * 2, 4 * self.poll_interval)
+
+    def _wait_unless_stopped(self, run: _Run, seconds: float) -> None:
+        """Wait between status polls, but wake at once when the endpoint closes or a user Stop is
+        requested (``request_stop`` notifies), so the stop is sent to Hermes without waiting for
+        the next poll."""
+        if seconds <= 0:
+            return
+        with self._lock:
+            self._lock.wait_for(lambda: self._closed or run.stop_requested, seconds)
 
     def _settled(self, run: _Run, state: str, value: dict[str, Any], stop_reason: Optional[str]) -> str:
         self._release(run)
@@ -986,10 +1053,16 @@ def _handler_for(bridge: ChatBridge) -> type:
             return False
 
         def _authorize(self) -> None:
+            # The gates of docs/web-protocol.md 1.2 in order: Host first, then role separation (the
+            # existing Origin refusal, no browser metadata, no Sidecar window or launcher credential).
+            if self.headers.get_all("Host") != [f"127.0.0.1:{bridge.port}"]:
+                raise ChatError(403, "Host must be the loopback chat endpoint")
             if self.headers.get("Origin") is not None:
                 raise ChatError(403, "requests with an Origin are refused")
-            if self.headers.get("Host") != f"127.0.0.1:{bridge.port}":
-                raise ChatError(403, "Host must be the loopback chat endpoint")
+            for name in self.headers.keys():
+                lowered = name.lower()
+                if lowered.startswith("sec-fetch-") or lowered in FOREIGN_TO_LEGACY:
+                    raise ChatError(403, "requests with Sidecar window credentials are refused here")
             expected = bridge.token()
             if not expected:
                 raise ChatError(503, "Hermes has no LibreOffice pairing token yet: pair first (see the README)")
