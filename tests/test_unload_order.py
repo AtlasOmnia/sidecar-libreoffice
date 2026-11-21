@@ -4,9 +4,9 @@
 
 close() asks every run whose id it knows to stop before it waits for the listener to shut down,
 and that wait is bounded by the same budget: the listener's accept loop is woken at once instead
-of waiting out its 0.5 s poll, and on an event loop close() does not wait for it at all. Before
-0.4.1 the listener was shut down first, which took the poll interval (or longer, when the accept
-thread was busy) out of the budget before any stop was sent.
+of waiting out its 0.5 s poll, and on an event loop close() waits for it at most 0.05 s. Before
+0.4.1 the listener was shut down first, which took up to the poll interval (or longer, when the
+accept thread was busy) out of the budget before any stop was sent.
 
 The API server is the scripted ``_call`` of test_run_ownership on the real clock. Pauses are
 events inside the code under test, never sleeps.
@@ -194,6 +194,47 @@ class ListenerDeadlineTests(unittest.TestCase):
         thread.join(5)
         self.assertFalse(thread.is_alive())
         self.assertLess(time.monotonic() - began, 5)
+
+
+class ReloadOnEventLoopTests(unittest.TestCase):
+    """A reload on an event-loop thread: the plugin's unload, then its register() on the same
+    chat port at once, with nothing in between. close() there gives the woken accept loop a
+    moment (at most 0.05 s) to close the listener, so the new endpoint can bind the port."""
+
+    ROUNDS = 200
+
+    def setUp(self):
+        import plugin
+        from test_chat_bridge import TOKEN
+        from test_chat_lifecycle import LedgerContext, SecretStore, free_port
+        self.plugin, self.context, self.free_port = plugin, LedgerContext, free_port
+        store = SecretStore({"LIBREOFFICE_LIVE_BRIDGE_TOKEN": TOKEN, "API_SERVER_KEY": API_KEY})
+        store.patch.start()
+        self.addCleanup(store.patch.stop)
+        gateway = mock.patch.object(plugin, "_in_gateway_process", return_value=True)
+        gateway.start()
+        self.addCleanup(gateway.stop)
+
+    def reload_on_the_loop(self):
+        plugin, port = self.plugin, self.free_port()
+        first = self.context({"chat_port": port, "api_server_port": 9}, [])
+        second = self.context({"chat_port": port, "api_server_port": 9}, [])
+
+        async def reload():
+            first.unload()
+            plugin.register(second)
+            return plugin._CHAT is not None
+        try:
+            plugin.register(first)
+            self.assertIsNotNone(plugin._CHAT, "the first endpoint started")
+            return asyncio.run(reload())
+        finally:
+            first.unload()
+            second.unload()
+
+    def test_the_endpoint_starts_again_on_the_same_port_after_an_unload_on_the_event_loop(self):
+        not_started = sum(1 for _ in range(self.ROUNDS) if not self.reload_on_the_loop())
+        self.assertEqual(not_started, 0, f"{not_started} of {self.ROUNDS} reloads did not start the endpoint")
 
 
 if __name__ == "__main__":

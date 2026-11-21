@@ -440,7 +440,7 @@ class ChatBridge:
         whose id is known is asked to stop through the API server's documented stop control (with
         the key it was started with) by a thread of its own, also when its chat thread is blocked
         in a status poll, and watched until it settles; only then is the listener shut down, and
-        that waits at most what is left of the budget (on an event loop, not at all). Every call
+        that waits at most what is left of the budget (on an event loop, at most 0.05 s). Every call
         gets only the time left, so unresponsive endpoints cannot add up; close() tries to cut off
         status polls started before it when it returns (a poll already reading a response body
         may stay blocked until that read completes or times out). Returns how many runs are still owned when it
@@ -473,7 +473,8 @@ class ChatBridge:
                              name="HermesLibreOfficeChatStop", daemon=True).start()
         on_loop = _on_event_loop_thread()
         if server is not None:   # the accept loop ends at once (woken); waiting for it is bounded too
-            server.stop_serving(0.0 if on_loop else max(0.0, deadline - time.monotonic()))
+            left = max(0.0, deadline - time.monotonic())
+            server.stop_serving(min(0.05, left) if on_loop else left)
         with self._lock:
             while not on_loop and (self._close_workers or any(run.driven for run in self._runs.values())):
                 left = deadline - time.monotonic()
