@@ -146,7 +146,10 @@ class WindowDisclosureTests(unittest.TestCase):
             "checked against a hash list on every request",
             "Open Sidecar",                                 # the only trigger for a browser start
             "cookies or keychain",                          # never read
-            "The extension runs no other program and no shell.",
+            "/usr/bin/osascript",                           # the programs the extension starts besides the browser
+            "/usr/bin/open",
+            "file association",                             # Windows: the default handler for .html files
+            "It runs no shell.",
             "The plugin starts no process.",
             "one-time",                                     # launch code
             "session token",
@@ -156,6 +159,7 @@ class WindowDisclosureTests(unittest.TestCase):
             "history keeps the",                            # spent one-time link
             "managed",                                      # policies on the dedicated profile
             "MB",                                           # memory per window
+            "about 60 MB",                                  # the dedicated browser profile
             "Linux",
         )
         for name in DISCLOSURE_FILES:
