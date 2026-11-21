@@ -101,8 +101,8 @@ class ManifestRegistrationTests(unittest.TestCase):
         self.assertIn("/tree/v0.5.0#readme", catalog)
         # The text shipped inside the .oxt names the same version.
         self.assertTrue((ROOT / "extension" / "README.txt").read_text(encoding="utf-8").startswith("Sidecar for LibreOffice 0.5.0 "))
-        # The bridge's Server header is not owned by the docs lane; it still names 0.4 (see the 0.5.0 lane D report).
-        self.assertIn('server_version = "SidecarLibreOfficeBridge/0.4"',
+        # The extension bridge's Server header names the same minor version.
+        self.assertIn('server_version = "SidecarLibreOfficeBridge/0.5"',
                       (ROOT / "extension" / "python" / "hermes_bridge.py").read_text(encoding="utf-8"))
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
         self.assertRegex(changelog, r"\n## \[0\.5\.0\] - (Unreleased|\d{4}-\d{2}-\d{2})\n")

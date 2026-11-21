@@ -1277,7 +1277,7 @@ _BRIDGE_ROUTES = {("POST", "/invoke"): "invoke"}
 
 def handler_for(runtime: BridgeRuntime):
     class Handler(BaseHTTPRequestHandler):
-        server_version = "SidecarLibreOfficeBridge/0.4"
+        server_version = "SidecarLibreOfficeBridge/0.5"
         sys_version = ""
 
         def setup(self) -> None:
