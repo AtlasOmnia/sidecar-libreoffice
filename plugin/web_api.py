@@ -81,7 +81,7 @@ CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; c
                  ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml"}
 RELPATH_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)*$")
 SUMS_LINE_RE = re.compile(r"^([0-9a-f]{64})  ([a-z0-9][a-z0-9._-]*(?:/[a-z0-9][a-z0-9._-]*)*)$")
-NUMBER_RE = re.compile(r"^[0-9]{1,6}$")
+NUMBER_RE = re.compile(r"^(0|[1-9][0-9]{0,5})$")   # decimal, no leading zeros (6.4)
 HERMES_STATES = {"queued": "queued", "started": "running", "running": "running", "stopping": "stopping",
                  "waiting_for_approval": "waiting_for_approval"}
 
@@ -181,6 +181,11 @@ def _family(path: str) -> Optional[str]:
     if route in ("/", "/favicon.ico") or route.startswith("/apple-touch-icon"):
         return "probe"
     return None
+
+
+def _chat_label(chat_session_id: str) -> str:
+    """The display-only ``chat_label`` (6.1): ``lo-`` and the first 8 hex digits of the chat session id."""
+    return chat_session_id[:11]
 
 
 def _cut(request: Any) -> None:
@@ -377,10 +382,10 @@ class WebApi:
                 raise WebError("not_found")
             return "static", "GET", "ui-static", relpath
         if family == "launcher" and route.startswith("/launcher/launch/"):
-            launch_id = route[len("/launcher/launch/"):]
-            if mark or not auth.SHORT_ID_RE.fullmatch(launch_id):
+            if mark:
                 raise WebError("not_found")
-            return "status", "GET", "launcher-status", launch_id
+            # A malformed id is checked after the channel MAC, so its 404 is signed like an unknown id's.
+            return "status", "GET", "launcher-status", route[len("/launcher/launch/"):]
         found = _ROUTES.get(route)
         if found is None or (mark and found[0] != "turn"):
             raise WebError("not_found")
@@ -467,7 +472,7 @@ class WebApi:
         call.mac = accepted   # every answer from here on carries the response MAC
         if name == "status":
             with self._cond:
-                launch = self.launches.get(extra)
+                launch = self.launches.get(extra) if auth.SHORT_ID_RE.fullmatch(extra) else None
                 state = launch.state if launch is not None else None
             if state is None:
                 raise WebError("not_found")
@@ -529,7 +534,7 @@ class WebApi:
             readiness = self.readiness()
             with self._cond:
                 payload = {"ok": True, "document": session.document, "chat": readiness,
-                           "chat_label": session.chat_session_id[3:11],
+                           "chat_label": _chat_label(session.chat_session_id),
                            "turn": self._view(session.turn) if session.turn is not None else None}
             return self._send(call, 200, payload)
         if name == "chat":
@@ -543,7 +548,7 @@ class WebApi:
                 session.chat_session_id = auth.new_chat_session_id()
                 session.turn = None
                 self._cond.notify_all()
-                label = session.chat_session_id[3:11]
+                label = _chat_label(session.chat_session_id)
             return self._send(call, 200, {"ok": True, "chat_label": label})
         with self._cond:   # close
             self._end_session(session, "closed")
@@ -585,7 +590,7 @@ class WebApi:
             launch.state, launch.session_digest = "exchanged", session.digest
             payload = {"ok": True, "session": token, "idle_timeout": int(auth.SESSION_IDLE_SECONDS),
                        "document": session.document, "host_scheme": session.host_scheme, "mode": session.mode,
-                       "bounds": session.bounds, "chat": readiness, "chat_label": session.chat_session_id[3:11],
+                       "bounds": session.bounds, "chat": readiness, "chat_label": _chat_label(session.chat_session_id),
                        "endpoint": self.origin, "limits": {"max_message": MAX_MESSAGE}}
         self._send(call, 200, payload)
 

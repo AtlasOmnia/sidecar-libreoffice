@@ -50,7 +50,7 @@ class TurnTests(WebCase):
         self.assertTrue(sent["input"].endswith("\n\nAdd a total row"))
         self.assertIn("document_id lo:5f0c:1", sent["input"])
         self.assertRegex(sent["session_id"], chat_bridge.SESSION_RE.pattern)
-        self.assertEqual(page.state()[1]["chat_label"], sent["session_id"][3:11])
+        self.assertEqual(page.state()[1]["chat_label"], sent["session_id"][:11])
 
     def test_the_outcome_is_kept_until_the_next_message_or_new_chat(self):
         page = self.page()
@@ -118,7 +118,8 @@ class TurnTests(WebCase):
         turn = self.start_turn(page)
         for query in (f"id={turn}&seq=0", f"id={turn}&seq=0&have=0&x=1", f"id={turn}&id={turn}&seq=0&have=0",
                       f"id={turn}&seq=-1&have=0", f"id={turn}&seq=200001&have=0", f"id={turn}&seq=1.0&have=0",
-                      "id=short&seq=0&have=0", f"id={turn}&seq=0&have=", ""):
+                      "id=short&seq=0&have=0", f"id={turn}&seq=0&have=", f"id={turn}&seq=01&have=0",
+                      f"id={turn}&seq=0&have=00", ""):
             status, value = page.request("GET", f"/api/turn?{query}")
             self.assertEqual((status, value["code"]), (400, "bad_request"), query)
         self.assertEqual(page.turn("A" * 22)[1]["code"], "unknown_turn")

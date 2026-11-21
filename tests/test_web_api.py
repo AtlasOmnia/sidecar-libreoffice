@@ -123,7 +123,7 @@ class GateMatrixTests(WebCase):
 
     def test_unknown_paths_and_query_strings(self):
         for path in ("/api", "/api/", "/api/state?x=1", "/api/sessions", "/launcher", "/launcher/launch?x",
-                     "/launcher/launch/short", "/favicon.ico", "/apple-touch-icon.png", "/"):
+                     "/favicon.ico", "/apple-touch-icon.png", "/"):
             status, _headers, value = self.send("GET", path, headers=self.browser())
             self.assertEqual((status, value["code"]), (404, "not_found"), path)
 
@@ -185,6 +185,14 @@ class LaunchLifecycleTests(WebCase):
     def status(self, launcher, launch_id):
         return launcher.call("GET", f"/launcher/launch/{launch_id}")[1]["state"]
 
+    def test_a_malformed_launch_id_gets_a_signed_404_like_an_unknown_one(self):
+        launcher = LauncherClient(self.port)
+        launcher.hello()
+        for launch_id in ("short", "", "A" * 23, "A" * 21 + "%", "a/" + "A" * 20, "B" * 22):
+            status, value, answer_mac = launcher.call("GET", f"/launcher/launch/{launch_id}")   # checks the MAC
+            self.assertEqual((status, value["code"]), (404, "not_found"), launch_id)
+            self.assertIsNotNone(answer_mac, launch_id)
+
     def test_a_code_is_single_use_bound_to_its_launch_and_expires(self):
         status, value, launcher = self.launch(mode="tab")
         self.assertEqual((status, value["window_live"], value["expires_in"]), (201, False, 30))
@@ -196,7 +204,7 @@ class LaunchLifecycleTests(WebCase):
         self.assertEqual(session["idle_timeout"], 43200)
         self.assertEqual(session["endpoint"], f"http://127.0.0.1:{self.port}")
         self.assertEqual(session["limits"], {"max_message": chat_bridge.MAX_MESSAGE})
-        self.assertRegex(session["chat_label"], r"^[0-9a-f]{8}$")
+        self.assertRegex(session["chat_label"], r"^lo-[0-9a-f]{8}$")
         self.assertEqual(self.status(launcher, value["launch_id"]), "exchanged")
         status, value, launcher = self.launch(document_id="other")
         self.clock.advance(web_auth.CODE_SECONDS)
