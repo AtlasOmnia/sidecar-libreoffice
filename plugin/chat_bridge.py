@@ -336,9 +336,10 @@ class _CallHandle:
     ``sock`` is the connected socket: kept here because http.client drops its own reference once
     an answer with ``Connection: close`` has been read, while its response still reads from it.
     A status poll or a user Stop is registered with the endpoint BEFORE it connects, so close()
-    reaches it whatever stage it is in."""
+    reaches it whatever stage it is in. A user Stop is registered before its thread starts;
+    ``started`` is set by that thread itself, so close() joins only a thread that has started."""
 
-    __slots__ = ("deadline", "cancelled", "sock", "lock", "run", "thread")
+    __slots__ = ("deadline", "cancelled", "sock", "lock", "run", "thread", "started")
 
     def __init__(self, deadline: float, run: Optional["_Run"] = None) -> None:
         self.deadline = deadline
@@ -347,6 +348,7 @@ class _CallHandle:
         self.lock = threading.Lock()
         self.run = run                                     # a user Stop's run
         self.thread: Optional[threading.Thread] = None     # a user Stop's thread
+        self.started = False                               # that thread is running
 
     def left(self) -> float:
         return self.deadline - time.monotonic()
@@ -433,7 +435,8 @@ class BoundedHTTPServer(ThreadingHTTPServer):
     The limit is checked in the accepting thread, before a worker thread exists; a connection
     over the limit gets the prepared ``refusal`` response without waiting and is closed.
     ``stop_serving(timeout)`` ends the accept loop without waiting out its poll interval and
-    waits for it at most ``timeout`` seconds (the listener is closed by whichever side ends last).
+    waits for it at most ``timeout`` seconds in all (the listener is closed by whichever side
+    ends last).
     """
 
     daemon_threads = True
@@ -460,6 +463,8 @@ class BoundedHTTPServer(ThreadingHTTPServer):
         self._refusal = refusal
         self._stop = threading.Event()     # stop_serving() was called
         self._served = threading.Event()   # the accept loop has ended
+        self._waker: Optional[socket.socket] = None   # stop_serving()'s wake connection, open until the loop ends
+        self._waker_lock = threading.Lock()
         super().__init__(address, handler)
 
     def serve_forever(self, poll_interval: float = 0.5) -> None:
@@ -476,26 +481,49 @@ class BoundedHTTPServer(ThreadingHTTPServer):
                     self.service_actions()
         finally:
             self._served.set()
+            self._drop_waker()
             if self._stop.is_set():
                 self.server_close()   # stop_serving() stopped waiting for this loop: close here
 
     def stop_serving(self, timeout: Optional[float]) -> bool:
-        """End the accept loop and wait for it at most ``timeout`` seconds (None: no limit). A
-        loopback connection wakes a waiting select() at once, so this does not wait out the
-        poll interval. True when the loop has ended; the listener is then closed here, else the
-        loop closes it when it ends."""
+        """End the accept loop and wait for it at most ``timeout`` seconds (None: no limit),
+        counted from this call: waking the loop takes none of it (a non-blocking loopback
+        connection makes a waiting select() return at once, so this does not wait out the poll
+        interval), and the wait gets what is left. True when the loop has ended; the listener is
+        then closed here, else the loop closes it when it ends."""
+        until = None if timeout is None else time.monotonic() + max(0.0, timeout)
         self._stop.set()
         if not self._served.is_set():
-            wake = 0.2 if timeout is None else min(0.2, max(0.05, timeout))
-            try:
-                socket.create_connection((str(self.server_address[0]), int(self.server_address[1])),
-                                         timeout=wake).close()
-            except OSError:
-                pass
-        ended = self._served.wait(timeout)
+            self._wake()
+        ended = self._served.wait(None if until is None else max(0.0, until - time.monotonic()))
         if ended:
+            self._drop_waker()
             self.server_close()
         return ended
+
+    def _wake(self) -> None:
+        """Connect to the listener without waiting: the kernel completes a loopback handshake on
+        its own, which makes the listener readable. The socket stays open until the loop ends
+        (closing it at once could withdraw the connection before the loop sees it)."""
+        with self._waker_lock:
+            if self._waker is not None or self._served.is_set():
+                return
+            try:
+                waker = socket.socket(self.address_family, socket.SOCK_STREAM)
+            except OSError:
+                return
+            self._waker = waker
+            try:
+                waker.setblocking(False)
+                waker.connect_ex(self.server_address)
+            except OSError:
+                pass
+
+    def _drop_waker(self) -> None:
+        with self._waker_lock:
+            waker, self._waker = self._waker, None
+        if waker is not None:
+            waker.close()
 
     def shutdown(self) -> None:
         self.stop_serving(None)
@@ -649,12 +677,14 @@ class ChatBridge:
         thread of its own, also when its chat thread is blocked in a status poll, and watched
         until it settles; only then is the listener shut down, and that waits at most what is
         left of the budget. Every call gets only the time left, so unresponsive endpoints cannot
-        add up. Status polls and user Stops in flight (registered before they connect) have their
-        deadline brought forward to the budget's end and are cut off when close() returns:
-        nothing more is sent on them, and a user Stop's thread is joined (a cut-off thread is
-        given ``STOP_JOIN_SECONDS`` to notice). Returns how many runs are still owned when it
-        returns: 0 means every run was seen to settle; anything else is unresolved (they may still
-        be running). It returns as soon as nothing is left to wait for, which can be before the
+        add up. Status polls and user Stops in flight (registered before they connect, a user
+        Stop before its thread starts) have their deadline brought forward to the budget's end
+        and are cut off when close() returns: nothing more is connected or sent on them. Then
+        close() waits for the user Stop threads until ONE cut-off, ``STOP_JOIN_SECONDS`` after
+        that, and joins only those that have started; a thread still inside an OS connect (which
+        cannot be interrupted) or not yet started is left behind, logged, and sends nothing when
+        it goes on. Returns how many runs are still owned when it returns: 0 means every run was
+        seen to settle; anything else is unresolved (they may still be running). It returns as soon as nothing is left to wait for, which can be before the
         budget ends (a run whose creation was never answered has no id and cannot be stopped).
         On an asyncio event-loop thread it cannot wait (that would block the API server answering
         the stops): the work continues in the background, bounded by the same budget (the
@@ -700,10 +730,25 @@ class ChatBridge:
             timer.start()
         else:
             self._cut_off_all()
+            # ONE cut-off for every user Stop, never a fresh grace per thread: STOP_JOIN_SECONDS
+            # after the cut-off, so never later than the budget's end plus that grace. A sender
+            # registered but not started yet is waited for the same way, never joined. A wait
+            # that runs out has reached the cut-off: it is not waited again.
+            join_by = min(deadline, time.monotonic()) + STOP_JOIN_SECONDS
             with self._lock:
-                senders = [handle.thread for handle in self._stop_senders if handle.thread is not None]
-            for thread in senders:   # cut off: each ends at once; nothing more is sent on it
-                thread.join(max(0.0, deadline - time.monotonic()) + STOP_JOIN_SECONDS)
+                senders = set(self._stop_senders)
+                while senders & self._stop_senders:
+                    left = join_by - time.monotonic()
+                    if left <= 0 or not self._lock.wait(left):
+                        break
+                ended = [handle.thread for handle in senders - self._stop_senders
+                         if handle.started and handle.thread is not None]
+                lingering = len(senders & self._stop_senders)
+            for thread in ended:   # past its last step under the lock: only the thread's exit is left
+                thread.join(max(0.0, join_by - time.monotonic()))
+            if lingering:
+                log.warning("libreoffice chat: %d user Stop request(s) had not ended when the endpoint closed (still "
+                            "connecting or not started); they were cut off and send nothing more", lingering)
         self._run_close_hooks(1, 0.0 if on_loop else max(0.0, deadline - time.monotonic()))
         if remaining:
             log.warning("libreoffice chat endpoint closed with %d run(s) not confirmed stopped; they may still "
@@ -882,12 +927,12 @@ class ChatBridge:
         """A user Stop: sets ``stop_requested`` and wakes the thread driving the run. When the
         run's id is known (and no stop is in flight or acknowledged), the stop is sent to Hermes at
         once by a short-lived thread with the run's own key, so a status poll in flight cannot
-        hold it back. That stop is registered with the endpoint before its thread starts, and its
-        whole call (connect, send, answer) ends by ``RECONCILE_SECONDS`` or the close budget,
-        whichever is first; close() cuts it off and joins its thread. The thread driving the run
-        settles and releases it and reports the ``user`` outcome; before the id is known that
-        thread sends the stop as soon as creation answers. Returns False when the run has already
-        settled."""
+        hold it back. That stop is registered with the endpoint before its thread starts (close()
+        cuts it off from then on and never joins a thread that has not started), and its whole
+        call (connect, send, answer) ends by ``RECONCILE_SECONDS`` or the close budget, whichever
+        is first. The thread driving the run settles and releases it and reports the ``user``
+        outcome; before the id is known that thread sends the stop as soon as creation answers.
+        Returns False when the run has already settled."""
         with self._lock:
             if run.settled:
                 return False
@@ -919,6 +964,7 @@ class ChatBridge:
         is handed to the driving thread (``stop_answer``); when no thread drives the run any more
         (it is unresolved), this thread releases it on that settled answer instead, through the
         same once-only ``_release``."""
+        handle.started = True   # from now on close() may join this thread
         self._local.stop_handle = handle
         try:
             answer = self._send_stop(run, handle.deadline)
