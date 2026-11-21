@@ -76,7 +76,7 @@
     replyFailed: "I couldn't complete that request.",
     checkingSend: "Checking that Hermes got your message…",
     sendUnknown: "It is not known yet whether Hermes received this message. If it did, its reply appears here. Try again asks once more; Hermes never runs the same message twice.",
-    sendRetry: "Hermes has not confirmed your last message. Try again asks once more; the same message is never run twice.",
+    sendRetry: "Hermes has not confirmed your last message. Try again sends it if Hermes did not get it; it is never run twice.",
     alreadySent: "Hermes already received this message, so it was not sent again. Check the document.",
     emptyReply: "Hermes finished without a reply.",
     copyLink: "Copy link",
@@ -307,6 +307,7 @@
       if (!turn) setStatus(TEXTS.chatOff);
     } else if (pendingSend && pendingSend.unknown && !sending) {
       showConnect(TEXTS.sendRetry, true);   // the Try again of this Send stays offered
+      setStatus(TEXTS.uncertain);           // not "not reachable": this poll was answered
     } else {
       byId("desk-connect").hidden = true;
       var current = byId("connection-status").textContent;
@@ -406,6 +407,7 @@
     setRunning(true);
     api("POST", "/api/chat", { message: p.message, send_id: p.id }).then(function (result) {
       if (pendingSend !== p) return;
+      unreachable = false;   // the plugin answered: an earlier "not reachable" banner no longer holds
       if (result.ok && result.data.turn && typeof result.data.turn.id === "string") {
         sending = false;
         settlePending();

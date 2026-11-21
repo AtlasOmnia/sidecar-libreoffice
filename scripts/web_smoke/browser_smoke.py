@@ -860,6 +860,62 @@ def _(b: BCtx) -> None:
         control.close()
 
 
+@scenario("g3.unreachable_try_again", "G3", "With a Send undecided: an outage that ends leaves no 'not reachable' "
+          "status, and a Try again that gets through before any state poll does clears the 'not reachable' "
+          "banner; one run", needs=("fake",))
+def _(b: BCtx) -> None:
+    """dev-critic round 3 N3 (the real page; the fixture page has no 'not reachable' banner)."""
+    if b.tag.startswith("fixture"):
+        raise SkipScenario("the fixture page has no 'not reachable' banner")
+    page, _lid, _c = b.open_window(30)
+    created = _creations(b)
+    mode, seen = {"state": "continue"}, {"chat": 0}
+    status = "document.getElementById('connection-status').textContent"
+    banner = "document.getElementById('desk-connect').hidden ? null : document.getElementById('desk-connect-text').textContent"
+
+    def decide(stage: str, params: dict) -> str:
+        if "/api/state" in params["request"]["url"]:
+            return mode["state"]
+        seen["chat"] += 1
+        return "fail" if seen["chat"] <= 3 else "continue"   # the Send never reaches the plugin, Try again does
+    control = FetchControl(page, [{"urlPattern": "*/api/state", "requestStage": "Request"},
+                                  {"urlPattern": "*/api/chat", "requestStage": "Request"}], decide)
+    try:
+        b.send(page, "Unreachable then Try again [hang]")
+        b.check("retries ran out: delivery not known", b.wait_text(page, UNDECIDED_TEXT, 10), True,
+                page.eval("document.getElementById('messages').innerText.slice(-300)"))
+        mode["state"] = "fail"
+        down = page.wait_for(f"{status} === 'Hermes not reachable' && ({banner} || '').includes('Hermes is not reachable')", 10)
+        b.check("state polls fail: the status and the banner say not reachable", bool(down), True, page.eval(status))
+        mode["state"] = "continue"
+        up = page.wait_for(f"{status} !== 'Hermes not reachable'", 10)
+        b.check("the outage ends: the status no longer says not reachable", bool(up), True, page.eval(status))
+        b.check("the Try again of the undecided Send is still offered",
+                page.eval(COMPOSER_STATE).get("retry") is True, True, page.eval(COMPOSER_STATE))
+        mode["state"] = "fail"
+        down = page.wait_for(f"({banner} || '').includes('Hermes is not reachable')", 10)
+        b.check("a second outage: the banner says not reachable", bool(down), True, page.eval(banner))
+        mode["state"] = "hold"   # from now on no state poll is answered at all
+        page.eval("document.getElementById('desk-connect-button').click()")
+        working = page.wait_for("!document.getElementById('stop-button').disabled", 15)
+        b.check("Try again got through: the turn runs", bool(working), True, page.eval(status))
+        shown = page.eval(banner)
+        b.check("the stale 'not reachable' banner is gone", shown is None or "not reachable" not in shown,
+                "no 'not reachable' banner", shown)
+        b.check("the status is not 'not reachable'", page.eval(status) != "Hermes not reachable",
+                "not 'Hermes not reachable'", page.eval(status))
+        mode["state"] = "continue"
+        control.release_all()
+        page.eval("document.getElementById('stop-button').click()")
+        b.check("Stop ends the turn", b.wait_text(page, "Stopped. Check the document", 15), True,
+                page.eval("document.getElementById('messages').innerText.slice(-300)"))
+        runs = _creations(b) - created
+        b.check("one run for one Send", runs == 1, 1, runs)
+        b.check("zero securitypolicyviolation events", b.csp(page) == [], [], b.csp(page))
+    finally:
+        control.close()
+
+
 @scenario("g3.new_chat_stale_state", "G3", "A state answer from before New chat, delivered after it, neither shows the "
           "cleared reply again nor an unknown-turn error", needs=("fake",))
 def _(b: BCtx) -> None:
