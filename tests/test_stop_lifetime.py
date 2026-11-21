@@ -8,7 +8,7 @@ cuts it off: after the cut-off it sends no Stop payload, also when the API serve
 answer or trickles it byte by byte, or when the thread had not even connected yet (critic2 R3).
 That is a promise about what is sent, not that every thread has ended: a thread that has not
 started, or is still inside an operating-system connect, can outlive close() and then sends
-nothing; on an event loop close() returns at once and the cut-off comes at the end of the budget,
+nothing; on an event loop close() waits at most 0.05 s for the listener and the cut-off comes at the end of the budget,
 so a Stop not yet connected can still be sent before then (6.5). close() asks every known run to
 stop before it waits for the listener to shut
 down, and that wait is bounded by the same budget (critic2 R4). A close() that runs while a
@@ -697,8 +697,7 @@ class SharedCutoffTests(unittest.TestCase):
 
 class ListenerDeadlineTests(unittest.TestCase):
     """critic2 R6(b): ``stop_serving(timeout)`` ends by ONE deadline taken when it is called:
-    waking the accept loop and waiting for it share it, and with no time (close() on an event
-    loop) nothing blocks. ``hold_blocking_connects`` holds a connect to the listener in blocking
+    waking the accept loop and waiting for it share it, and with no time left nothing blocks. ``hold_blocking_connects`` holds a connect to the listener in blocking
     mode for its whole timeout (as when the listener's queue is full); a non-blocking one goes
     through. The accept loop's own tests use real connections."""
 

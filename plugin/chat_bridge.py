@@ -675,9 +675,9 @@ class ChatBridge:
         close hooks end the web sessions), then every owned run whose id is known is asked to stop
         through the API server's documented stop control (with the key it was started with) by a
         thread of its own, also when its chat thread is blocked in a status poll, and watched
-        until it settles; only then is the listener shut down, and that waits at most what is
-        left of the budget. Every call gets only the time left, so unresponsive endpoints cannot
-        add up. Status polls and user Stops in flight (registered before they connect, a user
+        until it settles; the listener is shut down after the stop threads start, and that waits
+        at most what is left of the budget (on an event loop, at most 0.05 s). Every call gets only
+        the time left, so unresponsive endpoints cannot add up. Status polls and user Stops in flight (registered before they connect, a user
         Stop before its thread starts) have their deadline brought forward to the budget's end
         and are cut off when close() returns: nothing more is connected or sent on them. Then
         close() waits for the user Stop threads until ONE cut-off, ``STOP_JOIN_SECONDS`` after
@@ -686,8 +686,9 @@ class ChatBridge:
         it goes on. Returns how many runs are still owned when it returns: 0 means every run was
         seen to settle; anything else is unresolved (they may still be running). It returns as soon as nothing is left to wait for, which can be before the
         budget ends (a run whose creation was never answered has no id and cannot be stopped).
-        On an asyncio event-loop thread it cannot wait (that would block the API server answering
-        the stops): the work continues in the background, bounded by the same budget (the
+        On an asyncio event-loop thread it waits at most 0.05 s for the listener, within the
+        remaining budget, but does not wait for runs or Stop threads (that would block the API
+        server answering the stops): the work continues in the background, bounded by the same budget (the
         cut-off then happens at the budget's end), and the count of runs not yet confirmed is
         returned. Idempotent; a second call keeps the first call's budget.
         """
@@ -715,7 +716,8 @@ class ChatBridge:
             self._start_close_worker(run, deadline, drive)
         on_loop = _on_event_loop_thread()
         if server is not None:   # the accept loop ends at once (woken); waiting for it is bounded too
-            server.stop_serving(0.0 if on_loop else max(0.0, deadline - time.monotonic()))
+            left = max(0.0, deadline - time.monotonic())
+            server.stop_serving(min(0.05, left) if on_loop else left)
         with self._lock:
             while not on_loop and (self._close_workers or any(run.driven for run in self._runs.values())
                                    or any(not handle.run.settled for handle in self._stop_senders)):

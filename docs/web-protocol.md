@@ -526,8 +526,9 @@ logged; when it goes on it connects or sends nothing. So unload guarantees no St
 the cut-off, not that every Stop thread has ended. The stop of a run already seen to settle holds
 unload up for that grace at most, whatever the budget. These limits are the waits the plugin
 allocates, not a real-time bound: the operating system can return from a wait a little late.
-On an asyncio event-loop thread unload cannot wait (13.1): it returns at once, the Stop threads
-are not waited for, and they are cut off only when the budget ends, so until then a Stop that
+On an asyncio event-loop thread unload waits at most 0.05 s for the listener, within the
+remaining budget (13.1); runs and Stop threads are not waited for, and the Stop requests are
+cut off only when the budget ends, so until then a Stop that
 has not connected yet can still be sent after unload returned. One stop per run is in flight
 at a time.
 Only an observed settled state releases an admitted run, once, through the same ownership
@@ -849,7 +850,7 @@ an older plugin.
 | `ChatBridge.begin_turn(session_id, content, on_done) -> run` | `_claim` now (raises 409/429/503), then one worker runs `_drive`; `on_done(run, TurnOutcome)` once |
 | `ChatBridge.request_stop(run) -> bool` | user Stop and *window gone*: sets `stop_requested` and sends the stop at once when the run id is known (6.5); False when already settled |
 | `ChatBridge.session_state(session_id)` | `"driven"`, `"unresolved"` or `None` (New chat rule) |
-| `ChatBridge.owned_runs()`, `.closed`, `.close()` | unchanged signatures; `close()` (revision 4) closes ingress, ends the web sessions, starts the stop threads for known runs, then ends the listener (`BoundedHTTPServer.stop_serving(timeout)`, whose deadline is taken when it is called: it wakes the accept loop with a non-blocking loopback connection, which adds no blocking connect wait, and the following wait uses the remaining deadline; close() passes what is left of its budget, 0 on an event loop, where nothing blocks), waits for the runs and user Stops, and finally cuts off every status poll and user Stop still in flight and waits for the user Stop threads until one cut-off 0.25 s later, joining only those that have started (6.5); on an event-loop thread it returns at once, the cut-off comes when the budget ends and the threads are not waited for |
+| `ChatBridge.owned_runs()`, `.closed`, `.close()` | unchanged signatures; `close()` (revision 4) closes ingress, ends the web sessions, starts the stop threads for known runs, then ends the listener (`BoundedHTTPServer.stop_serving(timeout)`, whose deadline is taken when it is called: it wakes the accept loop with a non-blocking loopback connection, which adds no blocking connect wait, and the following wait uses the remaining deadline; close() passes what is left of its budget, capped at 0.05 s on an event loop), waits for the runs and user Stops, and finally cuts off every status poll and user Stop still in flight and waits for the user Stop threads until one cut-off 0.25 s later, joining only those that have started (6.5); on an event-loop thread it waits at most 0.05 s for the listener, within the remaining budget, then returns without waiting for runs or Stop threads; the cut-off comes when the budget ends and the threads are not waited for |
 | `compose_message(message, document)`, `SESSION_RE`, `MAX_MESSAGE`, `MAX_REPLY`, `MAX_ACTIVE` | unchanged |
 | `TurnOutcome(kind, status, text)`, `TurnOutcome.KINDS`, `TurnOutcome.from_error(exc)` | outcome kinds of 6.4 |
 | `ChatError`, `ChatStopped`, `USER_STOPPED`, `OUTCOME_UNCERTAIN`, `PLUGIN_TURNED_OFF`, `TURN_WORKER_FAILED` | errors and texts |
