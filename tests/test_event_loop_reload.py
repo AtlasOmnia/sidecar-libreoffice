@@ -70,7 +70,9 @@ class ReloadOnEventLoopTests(unittest.TestCase):
                 self.assertLessEqual(asyncio.run(close()), 0.06)
                 self.assertEqual(len(allowances), 1)
                 self.assertGreaterEqual(allowances[0], 0.0)
-                self.assertLessEqual(allowances[0], min(0.05, budget))
+                # Deadline addition/subtraction can round up; this is float epsilon,
+                # not an allowance for timer scheduling or a longer listener wait.
+                self.assertLessEqual(allowances[0], min(0.05, budget) + 1e-9)
                 if budget:
                     self.assertGreater(allowances[0], min(0.05, budget) - 0.01)
 

@@ -493,17 +493,24 @@ class StopStartRaceTests(unittest.TestCase):
         self.outcomes.wait()
         self.assertEqual(stop_threads(), [])
 
-    def assert_clean(self, owned):
+    def assert_clean(self, owned, allow_close_stop=False):
         self.assertEqual(self.bridge.owned_runs(), owned, "the count close() returned is still true")
+        # This records user Stop threads only; close's own reconciliation is separate.
         self.assertEqual(self.stop_connects, [], "the cut-off Stop never connected")
-        self.assertEqual(self.api.events("stop"), [], "no stop request reached the API server")
+        if not allow_close_stop:
+            self.assertEqual(self.api.events("stop"), [], "no stop request reached the API server")
         self.assertFalse(self.chat_run.stopping, "the run's stop slot is free again")
         with self.bridge._lock:
             self.assertEqual(self.bridge._stop_senders, set(), "no sender left registered")
             self.assertEqual(self.bridge._polls, set(), "no call left registered")
 
     def unresolved(self, fail, on_loop=False):
+        # close()'s worker (or a late reconciliation after return) may send its
+        # own Stop. Hold the fake's answer so this remains an unresolved run,
+        # independently of the event-loop listener wait and thread scheduling.
+        self.api.stop_mode = "stall"
         remaining, elapsed = self.close(0.3, on_loop)
+        self.assertEqual(remaining, self.bridge.owned_runs(), "close() returned the true owned count")
         self.assertEqual(remaining, 1, "never seen to settle: unresolved")
         self.assertEqual(len(self.ends), 1, "close()'s end hook ran")
         if on_loop:
@@ -513,7 +520,7 @@ class StopStartRaceTests(unittest.TestCase):
             self.assertLessEqual(elapsed, 0.3 + chat_bridge.STOP_JOIN_SECONDS + SLACK, "close() kept its budget")
         self.assertEqual(self.close(0.3, on_loop)[0], 1, "a second close() agrees")
         self.finish(fail)
-        self.assert_clean(owned=1)
+        self.assert_clean(owned=1, allow_close_stop=True)
 
     def test_close_while_the_start_is_held_for_an_unresolved_run_then_the_start_succeeds(self):
         self.unresolved(fail=False)
