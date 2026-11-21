@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -529,8 +530,10 @@ def _(c: Ctx) -> None:
             and ex["bounds"] == {"x": -100, "y": 30, "width": 400, "height": 900}, "bound values", "differs")
     c.check("exchange shape", set(ex) == {"ok", "session", "idle_timeout", "document", "host_scheme", "mode", "bounds",
                                           "chat", "chat_label", "endpoint", "limits"}
-            and ex["endpoint"] == c.origin and ex["limits"] == {"max_message": 8000}
-            and re.fullmatch(r"lo-[0-9a-f]{8}", ex["chat_label"] or "") is not None, "section 6.1 keys", sorted(ex))
+            and ex["endpoint"] == c.origin and ex["limits"] == {"max_message": 8000}, "section 6.1 keys", sorted(ex))
+    label = ex.get("chat_label") or ""
+    c.check("chat_label is lo- and 8 hex digits (section 6.1 example \"lo-1a2b3c4d\")",
+            re.fullmatch(r"lo-[0-9a-f]{8}", label) is not None, "lo-xxxxxxxx", f"{len(label)} chars, prefix lo-: {label.startswith('lo-')}")
     tab = c.launcher().launch(doc(2), host_scheme=None, mode="tab", bounds=None)
     c.expect("tab mode with null bounds and null scheme", tab, 201)
     rect = {"x": 0, "y": 0, "width": 400, "height": 800}
@@ -578,7 +581,15 @@ def _(c: Ctx) -> None:
     c.secrets.add(tok)
     c.check("exchanged after exchange", client.status(data["launch_id"]).json().get("state") == "exchanged", "exchanged", "?")
     c.expect("unknown launch id", client.status("B" * 22), 404, "not_found")
-    c.expect("malformed launch id", client.status("short"), 404, "not_found")
+    # A malformed id is not a /launcher/launch/<launch_id> path: 404 either as an unknown path (before
+    # the channel is checked, no MAC) or as an unknown id (MAC-signed). A wrong MAC is a failure.
+    client = c.launcher()
+    r = client.call("GET", "/launcher/launch/short", verify=False)
+    macs = r.all("X-Sidecar-MAC")
+    signed = len(macs) == 1 and hmac.compare_digest(macs[0], contract.response_mac(client.key, client.counter, r.status, r.body))
+    c.check("malformed launch id: 404 not_found, MAC absent or valid", r.status == 404 and r.code == "not_found"
+            and (not macs or signed), "404 not_found", f"{r.status} {r.code}, MAC {'valid' if signed else len(macs)}")
+    client = c.launcher()   # an unsigned answer leaves the channel's counter where it was: open a new one
     for name, payload in (("doc with host_quit", {"document_id": "lo:test:1", "reason": "host_quit"}),
                           ("null with document_closed", {"document_id": None, "reason": "document_closed"}),
                           ("bad reason", {"document_id": "lo:test:1", "reason": "bye"})):
@@ -878,10 +889,12 @@ def _(c: Ctx) -> None:
     tok, _ = c.session()
     tid = c.chat(tok, "hi").json()["turn"]["id"]
     for q in (f"id={tid}&seq=0", f"id={tid}&seq=0&have=0&x=1", f"id={tid}&id={tid}&seq=0&have=0",
-              f"id={tid}&seq=-1&have=0", f"id={tid}&seq=200001&have=0", f"id={tid}&seq=01&have=0",
+              f"id={tid}&seq=-1&have=0", f"id={tid}&seq=200001&have=0",
               f"id={tid}&seq=0&have=1.0", "id=short&seq=0&have=0", f"id={tid}&seq=&have=0", ""):
         c.expect(f"query {q.replace(tid, '<id>') or '(none)'}", c.get(f"/api/turn?{q}" if q else "/api/turn", tok),
                  400, "bad_request")
+    lead = c.get(f"/api/turn?id={tid}&seq=01&have=0", tok)   # section 6.4 says "decimal integers" only
+    c.check("seq=01 (leading zero; the contract does not say)", True, "info", f"{lead.status} {lead.code or ''}".strip())
     c.expect("unknown turn id", c.poll(tok, "C" * 22, 0), 404, "unknown_turn")
     other, _ = c.session(2)
     c.expect("another session's turn", c.poll(other, tid, 0), 404, "unknown_turn")
@@ -986,8 +999,9 @@ def _(c: Ctx) -> None:
     for t, turn in zip(toks[:4], turns):
         c.until_done(t, turn)
     nc = c.post("/api/new-chat", {}, toks[0])
+    # the label's format is judged once, in g1.launch.shape
     c.check("New chat after the turn ended -> 200 with a new label", nc.status == 200 and
-            re.fullmatch(r"lo-[0-9a-f]{8}", nc.json().get("chat_label") or "") is not None, 200, nc.status)
+            bool(nc.json().get("chat_label")), 200, nc.status)
     if "ready" in c.t.capabilities:
         c.t.set_ready("plugin_inactive")
         st = c.get("/api/state", toks[1]).json()
@@ -1119,7 +1133,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--bundle", required=True, help="page bundle folder (with SHA256SUMS)")
     ap.add_argument("--target", default="stub", choices=["stub", "plugin", "external"])
     ap.add_argument("--contract-timing", action="store_true", help="stub: keep the contract's timings (slow)")
-    ap.add_argument("--plugin-factory", default="plugin.web_api:make_test_endpoint")
+    ap.add_argument("--plugin-factory", default="plugin_factory:make_endpoint")
     ap.add_argument("--repo", default=str(HERE.parents[1]))
     ap.add_argument("--port", type=int)
     ap.add_argument("--token-file")

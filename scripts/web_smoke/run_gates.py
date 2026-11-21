@@ -83,7 +83,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--vendor-from", help="folder holding vendor/marked.umd.js and vendor/purify.js (pinned)")
     ap.add_argument("--ui-dir", help="the real page bundle (plugin/sidebar); default: the fixture only")
     ap.add_argument("--target", default="stub", choices=["stub", "plugin"])
-    ap.add_argument("--plugin-factory", default="plugin.web_api:make_test_endpoint")
+    ap.add_argument("--plugin-factory", default="plugin_factory:make_endpoint")
     ap.add_argument("--repo", default=str(HERE.parents[1]))
     ap.add_argument("--slow", action="store_true")
     ap.add_argument("--skip-browser", action="store_true")

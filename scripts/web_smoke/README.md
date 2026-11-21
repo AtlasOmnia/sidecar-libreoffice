@@ -12,7 +12,7 @@ installed Google Chrome (headless, throwaway profile). No installs, no network.
 | `fake_runs_api.py` | Fake Hermes Runs API with scripted runs (`[md]`, `[inject]`, `[hang]`, `[slow:S]`, `[fail]`, `[unknown]`, `[unresolved]`, `[approval]`, `[refuse]`, `[long:N]`, `[noreply]`) |
 | `corpus.py` | Markdown reply and the R1 injection corpus |
 | `httpraw.py` | Raw HTTP with exact headers, and a reference R18 launcher client |
-| `targets.py` | What the harness runs against: the stub, the real plugin (lane A factory), or an external endpoint |
+| `targets.py`, `plugin_factory.py` | What the harness runs against: the stub, the real plugin (`ChatBridge` + `plugin/web_api.py`), or an external endpoint |
 | `probes.py` | Black-box probe matrix (G1 rows, connection budget, unload, turn semantics) |
 | `cdp.py`, `browser_smoke.py` | Headless Chrome over `--remote-debugging-pipe`; page checks (G3, R1 corpus, G5 keyboard/AX) |
 | `fixture/` | A reference page written from section 7 of the contract, used until the real bundle exists |
@@ -40,4 +40,5 @@ python3 scripts/web_smoke/run_gates.py --evidence <folder> [--target stub|plugin
 ```
 
 Without `--ui-dir` the page checks use `fixture/` with the vendored libraries copied from
-`--vendor-from` (hash-checked). `--target plugin` needs lane A's test factory (see `targets.py`).
+`--vendor-from` (hash-checked). `--target plugin` runs the same checks against the real `ChatBridge`
+with the plugin's contract timings (add `--slow` for the probes that wait more than 40 s).

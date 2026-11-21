@@ -31,6 +31,7 @@ import argparse
 import hashlib
 import hmac
 import importlib.util
+import inspect
 import json
 import logging
 import os
@@ -234,9 +235,12 @@ class Stub:
     def start(self) -> int:
         self.fake.start()
         self.fake.observers.append(self._observe)
+        options = {}
+        if "web_routes" in inspect.signature(self.cb.ChatBridge).parameters:
+            options["web_routes"] = False   # the plugin's own window routes (once they exist) are not the stub
         self.bridge = self.cb.ChatBridge(port=self._requested_port, token=lambda: self.token,
                                          api_key=lambda: self.api_key_value, api_port=self.fake.port,
-                                         fence_active=lambda: self.fence, poll_interval=self._poll_interval)
+                                         fence_active=lambda: self.fence, poll_interval=self._poll_interval, **options)
         self.bridge.add_route_handler(self.handle)
         self.port = self.bridge.start()
         if self.port in RESERVED_PORTS:   # cannot happen with port 0, but never serve on them

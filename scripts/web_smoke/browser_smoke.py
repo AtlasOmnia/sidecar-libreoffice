@@ -400,8 +400,10 @@ def _(b: BCtx) -> None:
     first = b.new_page(b.bootstrap(url).as_uri())
     b.wait_connected(first)
     second = b.new_page(url)
-    b.check("the second presentation is refused", b.wait_text(second, "already used or has expired", 6), True,
-            second.eval("document.body.innerText.slice(0, 200)"))
+    refused = second.wait_for("document.body.innerText.includes('already used or has expired') || document.body.innerText"
+                              f".includes({json.dumps(contract.PAGE_TEXTS['double_use'])})", 6)
+    b.check("the second presentation is refused (launch_expired or double-use text; section 6.1 gives no text for it)",
+            bool(refused), True, second.eval("document.body.innerText.slice(0, 200)"))
     first.eval("window.dispatchEvent(new Event('focus'))")
     b.check("the first window shows the double-use text", b.wait_text(first, contract.PAGE_TEXTS["double_use"], 8), True,
             first.eval("document.body.innerText.slice(0, 200)"))

@@ -3,7 +3,7 @@
 """What the harness runs against.
 
 - ``StubTarget``: ``stub_server.Stub`` in process (all controls; timings may be shortened).
-- ``PluginTarget``: the real plugin through a factory lane A provides (request in REPORT):
+- ``PluginTarget``: the real plugin through a factory (default ``plugin_factory.make_endpoint``):
   ``factory(*, sidebar_dir, api_port, token, api_key, fence_active, timing) -> started ChatBridge``
   where ``token``, ``api_key`` and ``fence_active`` are callables and ``timing`` is a dict of
   overrides the plugin may ignore (the harness then skips probes that would wait too long).
@@ -153,7 +153,8 @@ class PluginTarget(Target):
 
     def set_ready(self, reason: Optional[str]) -> None:
         self.fence = reason != "plugin_inactive"
-        self.api_key_value = {"no_api_key": None, "bad_api_key": "wrong-key"}.get(reason or "", self.fake.api_key)
+        # bad_api_key: a key that cannot be sent as a header value (the plugin's own test of it)
+        self.api_key_value = {"no_api_key": None, "bad_api_key": "unusable key"}.get(reason or "", self.fake.api_key)
 
     def set_token(self, on: bool) -> None:
         self.token = self._token if on else None
