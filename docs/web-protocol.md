@@ -15,6 +15,15 @@ agreed by the plugin and launcher owners, with the test vectors updated in the s
 with 404/405 (1.2), the legacy and unload refusals, the browser probe paths, the `chat_label`
 form, leading zeros, malformed launch ids, the sanitizer option, the theme script's name, the
 panel texts outside 8.2, the macOS helper programs and the Windows tab-only path (13.2, 14).
+**Revision 3 (fix round 1 of the 0.5.0 review)**: `/api/chat` takes an optional `send_id` and a
+retry of the same Send answers with the turn it started (6.3), the turn view names it (6.4), and
+the page follows an unseen turn also when it has already ended (7.2); a user Stop is sent to
+Hermes at once, also while a status poll is in flight (6.5); a hello displaces only a channel
+that has not been used yet, and only a verified call displaces a used one (3.1); the prepared refusal of a full
+endpoint carries the code `endpoint_busy` (9.1, 12); a turn's `seq` grows only when what the page
+is shown changes (6.4); successful state polls and static files log at DEBUG (11); on Windows
+the listener binds its port exclusively (1); methods outside the table are described as the code
+answers them (10). Revision 2 callers keep working: a body without `send_id` is accepted.
 Labels such as R18, D1 or S1 are the requirement, owner-decision and spike numbers of the 0.5.0
 design review; the spike results that fixed a detail are quoted where they apply.
 
@@ -24,7 +33,10 @@ top-left of the main display, y downwards, in points (not device pixels).
 
 ## 1. Listener and origins
 
-- The plugin listens on `127.0.0.1:<chat_port>` only (0 means off: no listener at all).
+- The plugin listens on `127.0.0.1:<chat_port>` only (0 means off: no listener at all). On
+  Windows the port is bound with `SO_EXCLUSIVEADDRUSE` and without `SO_REUSEADDR`, so no other
+  socket, of any user account, can bind it while the listener is up; elsewhere `SO_REUSEADDR`
+  stays (it allows a restart over `TIME_WAIT` connections; a second bind still fails).
 - `ORIGIN` is `http://127.0.0.1:<chat_port>`. `HOST` is `127.0.0.1:<chat_port>`.
 - Every response closes its connection (`Connection: close`). No route sets or reads a cookie;
   no response ever carries `Set-Cookie`.
@@ -50,9 +62,10 @@ top-left of the main display, y downwards, in points (not device pixels).
 | POST | `/api/new-chat` | page | session header | `api-new-chat` |
 | POST | `/api/session/close` | page | session header | `api-close` |
 
-`/health` and `/chat` are kept unchanged through 0.5.x for 0.4.0 extensions and are deprecated
-for removal in 0.6.0 (owner decision D2). Any other path answers 404; any other method on a
-listed path answers 405 (section 10). `OPTIONS` and `HEAD` are never answered with CORS headers.
+`/health` and `/chat` are kept compatible through 0.5.x for 0.4.0 extensions (same requests and
+answers; the Host gate and the refusals of 1.2 are new) and are deprecated for removal in 0.6.0
+(owner decision D2). Any other path answers 404; `OPTIONS`, `HEAD`, `PUT`, `DELETE`, `PATCH`, and
+`GET` or `POST` where not listed, answer 405 on a listed path (section 10). `OPTIONS` and `HEAD` are never answered with CORS headers.
 The paths browsers ask for on their own, `/`, `/favicon.ico` and `/apple-touch-icon*`, get the
 JSON 404 `not_found` of the new routes with label `unknown` (not the legacy 404 "unknown route").
 
@@ -141,8 +154,14 @@ field, or any status other than 200 means the program on that port is not this u
 the launcher sends nothing more and shows the *not your Hermes* text (section 8.2).
 
 Without a pairing token the plugin answers 503 `no_pairing`. A refused connection means chat is
-off or the gateway is down (section 8.2). At most 16 live channels; the oldest is dropped for a
-new hello. A server nonce opens exactly one channel and is never reissued.
+off or the gateway is down (section 8.2). Live channels are kept in two pools of at most 16
+each (revision 3). Hello has no credential, so a new hello displaces only a channel that has not
+been used yet (no MAC-verified call), the oldest such first. A channel's first MAC-verified call
+moves it to the used pool; when that pool already holds 16, the least recently called used
+channel is dropped. So hellos from a program without the token can end only a channel whose
+launcher has not made its first call yet, never one it is working with; a used channel ends by
+its own failure, its expiry, its 64-call limit, or 16 newer launchers' first calls. A server
+nonce opens exactly one channel and is never reissued.
 
 ### 3.2 Calls on a channel
 
@@ -347,12 +366,30 @@ they hold no other connection. A window with an active turn does not poll it.
 
 ### 6.3 `POST /api/chat`
 
-Body `{"message": "<1..8000 characters, not only whitespace>"}`. The plugin composes the Hermes
-turn with the session's document (`compose_message`), claims synchronously and starts one worker
-(`ChatBridge.begin_turn`). 202 `{"ok": true, "turn": <turn view>}`. Refusals are synchronous:
-409 `busy` ("this chat is still waiting for a reply"), 409 `unresolved` (the 0.4.0 text that
-ends "Start a New chat to continue."), 429 `too_many`, 503 `plugin_inactive`, 503
+Body `{"message": "<1..8000 characters, not only whitespace>", "send_id": "<22>"}`; `send_id` is
+optional (a revision 2 body has only `message`). The plugin composes the Hermes turn with the
+session's document (`compose_message`), claims synchronously and starts one worker
+(`ChatBridge.begin_turn`). 202 `{"ok": true, "turn": <turn view>, "replayed": false}`. Refusals
+are synchronous: 409 `busy` ("this chat is still waiting for a reply"), 409 `unresolved` (the
+0.4.0 text that ends "Start a New chat to continue."), 429 `too_many`, 503 `plugin_inactive`, 503
 `worker_failed`, 400 `message_invalid`. A new message clears the previous turn record.
+
+**Idempotent Send (revision 3).** The page makes one random `send_id` (16 bytes, base64url, 22
+characters) per Send and uses it for every attempt of that Send. When the session's current turn
+was started with the same `send_id`, the plugin answers 200 `{"ok": true, "turn": <turn view>,
+"replayed": true}` with that turn, working or ended, and sends nothing to Hermes; with the same
+`send_id` and another message (compared as a SHA-256 digest of the trimmed text) it answers 400
+`bad_request`. While the first attempt is still being admitted a retry gets 409 `busy`. A
+malformed `send_id` is 400 `bad_request`. The page:
+
+- retries a Send whose answer did not arrive (network error) or was 503 `endpoint_busy` (nothing
+  was read), and a retry answered 409 `busy`, at most twice, 1 s apart, with the same `send_id`;
+- after three unanswered attempts sends nothing more for that Send, says it is not known whether
+  Hermes received the message (check the document before sending it again), keeps Send disabled
+  and lets the state poll decide: a turn it has not followed is followed (7.2), and an answer
+  without such a turn means the message never arrived, which the page says, putting the message
+  back in the input box;
+- keeps New chat disabled while a Send is undecided.
 
 ### 6.4 `GET /api/turn?id=<turn>&seq=<n>&have=<n>` (cursor long-poll)
 
@@ -372,6 +409,7 @@ ends "Start a New chat to continue."), 429 `too_many`, 503 `plugin_inactive`, 50
 {"ok": true, "superseded": false,
  "turn": {"id": "<22>", "seq": 7, "state": "working" | "stopping" | "done",
           "hermes_state": "queued" | "running" | "stopping" | "waiting_for_approval" | null,
+          "send_id": "<22>" | null,
           "text_from": 0, "text": "<reply characters from text_from on>", "text_length": 1234,
           "activity": [],
           "outcome": null | {"kind": "completed" | "user" | "uncertain" | "turned_off" | "error",
@@ -379,7 +417,10 @@ ends "Start a New chat to continue."), 429 `too_many`, 503 `plugin_inactive`, 50
 ```
 
 - `hermes_state` is the last Runs API state the plugin observed for the run (display-only): the
-  Runs API state `started` is reported as `running`; any state not listed here is `null`.
+  Runs API state `started` is reported as `running`; any state not listed here is `null`. `seq`
+  grows when `state`, `outcome` or the reported `hermes_state` changes, not when the Runs API
+  state changes behind the same reported value (`started` to `running`).
+- `send_id` is the `send_id` of the `/api/chat` request that started the turn, `null` without one.
 - `text` is the suffix `reply[have:]` (at most `MAX_REPLY` characters in total). In 0.5.0 (tier
   T1) the reply arrives whole when the turn completes; `activity` is always `[]` and is reserved
   for the T2 relay, which is out of 0.5.0.
@@ -398,9 +439,14 @@ Turn view (used in 6.2 and 6.3) is the same `turn` object without `text` and `te
 
 ### 6.5 `POST /api/turn/stop`
 
-Body `{"turn": "<22>"}`. Sets `stop_requested` only (`ChatBridge.request_stop`); the worker
-driving the run sends the stop to Hermes and reports outcome `user`. 202 with the turn view (state
-`stopping`), or 200 with the final view when the turn already ended. 404 `unknown_turn`.
+Body `{"turn": "<22>"}`. `ChatBridge.request_stop` sets `stop_requested` and, once the run's id is
+known, sends the stop to Hermes at once from a short-lived thread with the run's own key, bounded
+by 10 s and the unload budget, so a status poll in flight does not delay it; before the id is
+known the worker sends it as soon as creation answers. One stop per run is in flight at a time.
+The worker driving the run alone settles and releases it and reports outcome `user` (a stop's
+acknowledgement alone releases nothing; a run Hermes reports completed before the stop took
+effect still reports what Hermes reported). 202 with the turn view (state `stopping`), or 200
+with the final view when the turn already ended. 404 `unknown_turn`.
 
 ### 6.6 `POST /api/new-chat`
 
@@ -500,6 +546,12 @@ Cache-Control: no-cache
   that shows the URL with a **Copy link** button; nothing in the page navigates or opens a window.
   No `<img>`; no HTML sink other than the DOMPurify Trusted Types policy; status and activity text
   use `textContent`.
+- Turns (revision 3): the page remembers the ids of the turns it has followed in this session
+  (cleared by New chat). A state poll that reports a turn the page has not followed, working or
+  already ended, makes the page follow it with `/api/turn` from the reported `seq` and `have=0`
+  (an ended turn answers at once), so its reply or
+  outcome is shown exactly once; a turn already followed is never shown again. Every Send carries
+  a `send_id` (6.3).
 
 ### 7.3 DOM ids the page must keep
 
@@ -611,7 +663,8 @@ there. Not yet verified: 2× displays and a second display (G6).
 | `not_found` | 404 | unknown path, unlisted or changed static file, unknown launch id |
 | `no_pairing` | 503 | no pairing token in Hermes yet |
 | `launcher_auth` | 401 | channel unknown, expired, wrong counter or MAC |
-| `channel_limit` | 429 | not used while the oldest channel can be dropped; reserved |
+| `channel_limit` | 429 | not used (3.1 always has room for a hello); reserved |
+| `endpoint_busy` | 503 | every handler slot is taken; nothing was read (12) |
 | `too_many_launches`, `session_cap` | 429 | 4.1 |
 | `launch_expired`, `launch_double_use` | 401 | 6.1 |
 | `no_session` | 401 | missing or ended session (`ended` gives the reason) |
@@ -652,23 +705,32 @@ the existing error sentences.
 
 ## 10. Methods outside the table
 
-A method not listed for a known path answers 405 `method_not_allowed` as JSON with an `Allow`
-header, no CORS headers, label `method`. Unknown paths answer 404 `not_found`. The legacy pair
-keeps 0.4.0's answers (404 "unknown route"; other methods get the standard 501) unless the plugin
-owner changes them in a later revision.
+On a known path, `GET` or `POST` where not listed, `OPTIONS`, `HEAD`, `PUT`, `DELETE` and `PATCH`
+answer 405 `method_not_allowed` as JSON with an `Allow` header, no CORS headers, label `method`.
+Any other method (`TRACE`, `CONNECT`, `PROPFIND`, …) on any path gets the standard library's 501
+HTML page, without CORS headers and without running any route. Unknown paths answer 404
+`not_found`. The legacy pair keeps 0.4.0's answers (404 "unknown route") unless the plugin owner
+changes them in a later revision.
 
 ## 11. Log labels
 
 `health`, `chat`, `launcher-hello`, `launcher-launch`, `launcher-status`, `launcher-release`,
 `ui-static`, `api-session`, `api-state`, `api-chat`, `api-turn`, `api-stop`, `api-new-chat`,
 `api-close`, `method`, `unknown`. A route handler sets `request.route_label` before it answers.
+Each answer is one log line: at DEBUG for a successful (status below 400) `api-state` or
+`ui-static` answer, which an idle window causes every 3 s, at INFO for every other answer and
+every refusal.
 
 ## 12. Connection budget (R4)
 
 Per Sidecar window: no connection while idle except a state poll every 3 s; one `/api/turn`
 long-poll while a turn is active. Plugin: at most `MAX_ACTIVE` (4) long-polls are ever parked
 (one per driven turn), which stays below the browser's six connections per origin, and 4 + 6
-parallel static or poll requests stay below `MAX_HANDLERS` (16).
+parallel static or poll requests stay below `MAX_HANDLERS` (16). The listen backlog is 64. A
+connection accepted while all 16 handler slots are taken gets the prepared answer 503
+`{"ok": false, "error": "the chat endpoint is busy; try again shortly", "code": "endpoint_busy"}`
+(unsigned, on every route, before the request is read): nothing was processed, the caller may
+try again. The launcher shows it as busy (*Hermes did not answer…*), not as an older plugin.
 
 ## 13. Interfaces between lanes (Python)
 
@@ -682,7 +744,7 @@ parallel static or poll requests stay below `MAX_HANDLERS` (16).
 | `request.respond(status, data, start, content_type=…, headers=(…))` | one full answer, `Connection: close`, one metadata log line with `request.route_label` |
 | `request.route_label` | set to a label from section 11 |
 | `ChatBridge.begin_turn(session_id, content, on_done) -> run` | `_claim` now (raises 409/429/503), then one worker runs `_drive`; `on_done(run, TurnOutcome)` once |
-| `ChatBridge.request_stop(run) -> bool` | user Stop and *window gone*: sets `stop_requested`; False when already settled |
+| `ChatBridge.request_stop(run) -> bool` | user Stop and *window gone*: sets `stop_requested` and sends the stop at once when the run id is known (6.5); False when already settled |
 | `ChatBridge.session_state(session_id)` | `"driven"`, `"unresolved"` or `None` (New chat rule) |
 | `ChatBridge.owned_runs()`, `.closed`, `.close()` | unchanged |
 | `compose_message(message, document)`, `SESSION_RE`, `MAX_MESSAGE`, `MAX_REPLY`, `MAX_ACTIVE` | unchanged |
@@ -698,7 +760,9 @@ Added in 0.5.0 (lane A), all no-ops for callers that do not use them:
 | `ChatBridge.run_state_listener` | `callable(run)` or `None`; called (never under the lock) when a run's `hermes_state` changes |
 | `_Run.hermes_state` | the last observed Runs API state of a run, display-only (6.4 maps it) |
 | `BoundedHTTPServer.request_queue_size = 64` | listen backlog, so a burst of page requests is queued rather than refused |
-| `ChatBridge.request_stop(run)` | also wakes the thread following the run, which sends the stop to Hermes at once instead of at its next poll |
+| `ChatBridge.request_stop(run)` | also wakes the thread following the run (its `_Run.wake` event), and sends the stop from a thread of its own, so a status poll in flight does not delay it (revision 3) |
+| `BoundedHTTPServer` on Windows | `SO_EXCLUSIVEADDRUSE`, no `SO_REUSEADDR` (revision 3) |
+| `chat_bridge.ENDPOINT_BUSY` | `"endpoint_busy"`, the code of the prepared busy refusal (revision 3) |
 
 The role gates of 1.2 also apply to the legacy pair. `plugin/web_auth.py` (codes, sessions, channels; no sockets) and `plugin/web_api.py`
 (routes, static files, turn records) register through `add_route_handler`.
