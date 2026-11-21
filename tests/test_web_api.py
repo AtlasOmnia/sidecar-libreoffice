@@ -441,7 +441,10 @@ class LogLabelTests(WebCase):
             raw_request(self.port, "GET", "/ui/index.html", headers=[("Host", f"127.0.0.1:{self.port}")])
             raw_request(self.port, "GET", "/ui/missing.js", headers=[("Host", f"127.0.0.1:{self.port}")])
             raw_request(self.port, "GET", "/api/state", headers=[(("Host", f"127.0.0.1:{self.port}"))])
-            eventually(lambda: sum(" -> " in line for line in captured.output) >= 6)
+            # Wait for each expected line, not for a count: the setup's own api-session line can
+            # be logged late, inside this capture, and must not stand in for the slower 403.
+            wanted = ("api-state -> 200", "ui-static -> 200", "ui-static -> 404", "api-state -> 403")
+            eventually(lambda: all(any(want in line for line in captured.output) for want in wanted))
         lines = [line.split(":", 2) for line in captured.output]
         levels = {}
         for level, _name, message in lines:
