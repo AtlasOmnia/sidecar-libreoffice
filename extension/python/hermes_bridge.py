@@ -1204,6 +1204,9 @@ class BridgeRuntime(ExtraOps):
         raise BridgeFault("Validation", f"unsupported operation: {op}", 400)
 
 
+_WINDOWS = os.name == "nt"
+
+
 class _DeadlineReader(io.RawIOBase):
     """Socket reads bounded by ONE absolute deadline: every recv gets only the time that is
     left, so a client that trickles bytes cannot extend it the way a per-recv timeout allows."""
@@ -1234,6 +1237,15 @@ class BoundedHTTPServer(ThreadingHTTPServer):
         self._slots = threading.BoundedSemaphore(max_handlers)
         self._refusal = refusal
         super().__init__(address, handler)
+
+    def server_bind(self) -> None:
+        if _WINDOWS:
+            # Windows: SO_REUSEADDR (the stdlib default here) would let another socket, even one of
+            # another account, bind this address and port while the listener is up and receive
+            # some of its connections. SO_EXCLUSIVEADDRUSE refuses every second bind instead.
+            self.allow_reuse_address = False
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)  # type: ignore[attr-defined]
+        super().server_bind()
 
     def process_request(self, request: Any, client_address: Any) -> None:
         if not self._slots.acquire(blocking=False):
