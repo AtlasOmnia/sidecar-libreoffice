@@ -250,7 +250,9 @@ class ChannelClient(unittest.TestCase):
             ((404, {"ok": False, "error": "unknown route"}), L.OLD_PLUGIN),
             ((200, {"ok": True, "v": 1, "server_nonce": "short", "server_proof": "x"}),
              L.NOT_YOURS.format(port=self.plugin.port)),
-            ((500, {"ok": False, "code": "internal", "error": "x"}), L.NOT_YOURS.format(port=self.plugin.port)),
+            ((500, {"ok": False, "code": "internal", "error": "x"}), L.ENDPOINT_FAILED),
+            ((503, {"ok": False, "code": "turned_off", "error": "x"}), L.TURNED_OFF),
+            ((403, {"ok": False, "code": "bad_host", "error": "x"}), L.NOT_YOURS.format(port=self.plugin.port)),
             ((200, None, None, None, b"not json"), L.NOT_YOURS.format(port=self.plugin.port)),
         ]
         for override, text in cases:
@@ -1154,6 +1156,85 @@ class SpawnOnlyFromTheButton(unittest.TestCase):
         source = (EXTENSION / "hermes_bridge.py").read_text(encoding="utf-8")
         used = set(re.findall(r"sidecar_launcher\.(\w+)", source))
         self.assertEqual(used, {"on_document_closed", "on_terminate", "on_start"})
+
+
+class UnsignedAnswersAfterHello(unittest.TestCase):
+    """Answers nobody signed only choose among fixed panel texts: the plugin's own coded hello
+    refusals, and an unsigned 401 on the first call after a hello that proved the plugin."""
+
+    def setUp(self):
+        self.plugin = FakePlugin()
+        self.addCleanup(self.plugin.close)
+
+    def test_coded_hello_refusals_show_fixed_texts_never_the_answers_own_words(self):
+        for status, code, text in ((503, "turned_off", L.TURNED_OFF), (500, "internal", L.ENDPOINT_FAILED)):
+            self.plugin.hello_override = (status, {"ok": False, "code": code, "error": "Visit http://example.invalid now"})
+            with self.assertRaises(L.LauncherError, msg=code) as caught:
+                L.LauncherClient(self.plugin.port, lambda: TOKEN).hello()
+            self.assertEqual(str(caught.exception), text)
+        self.assertEqual(len(self.plugin.requests), 2)  # nothing is sent after either hello
+
+    def test_an_unsigned_launcher_auth_on_the_first_call_means_try_again(self):
+        client = L.LauncherClient(self.plugin.port, lambda: TOKEN)
+        client.hello()
+        self.plugin.channels.clear()  # displaced between the hello and the first call
+        with self.assertRaises(L.LauncherError) as caught:
+            client.launch(DOCUMENT, None, "tab", None)
+        self.assertEqual(str(caught.exception), L.NO_ANSWER.format(port=self.plugin.port))
+        with self.assertRaises(L.LauncherError):  # the channel is dropped all the same
+            client.status("A" * 22)
+        self.assertEqual(len(self.plugin.requests), 2)
+
+    def test_a_later_unsigned_401_is_still_not_your_hermes(self):
+        client = L.LauncherClient(self.plugin.port, lambda: TOKEN)
+        client.hello()
+        client.launch(DOCUMENT, None, "tab", None)
+        self.plugin.channels.clear()
+        with self.assertRaises(L.LauncherError) as caught:
+            client.status("A" * 22)
+        self.assertEqual(str(caught.exception), L.NOT_YOURS.format(port=self.plugin.port))
+
+    def test_the_texts_are_the_plugins_sentences(self):
+        sys.path.insert(0, str(ROOT))
+        from plugin import web_api
+        self.assertEqual(L.TURNED_OFF, web_api.ERRORS["turned_off"][1])
+        self.assertTrue(L.ENDPOINT_FAILED.lower().startswith(web_api.ERRORS["internal"][1]))
+
+
+class HelloFloodAgainstThePlugin(unittest.TestCase):
+    """The real plugin endpoint: a flood of hellos from a program without the token, landing
+    between the launcher's hello and its first call, makes the panel say try again, not that
+    something other than Hermes answered (contract 3.1)."""
+
+    def setUp(self):
+        sys.path.insert(0, str(ROOT))
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from support import fake_runs_api as support
+        self.support = support
+        api = support.FakeRunsApi()
+        self.addCleanup(api.close)
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        bridge, self.port, self.web = support.make_bridge(api, root=support.make_fixture(folder.name))
+        self.addCleanup(bridge.close, 3.0)
+
+    def test_a_hello_flood_before_the_first_call_says_did_not_answer(self):
+        client = L.LauncherClient(self.port, lambda: self.support.PAIRING_TOKEN)
+        client.hello()
+        for _ in range(17):  # one more than the unused pool holds
+            stranger = self.support.LauncherClient(self.port, token="not-the-pairing-token-" + "x" * 30)
+            try:
+                stranger.hello()
+            except AssertionError:  # its proof cannot verify without the token
+                pass
+        with self.assertRaises(L.LauncherError) as caught:
+            client.launch(DOCUMENT, None, "tab", None)
+        self.assertEqual(str(caught.exception), L.NO_ANSWER.format(port=self.port))
+
+    def test_without_a_flood_the_same_launch_succeeds(self):
+        client = L.LauncherClient(self.port, lambda: self.support.PAIRING_TOKEN)
+        client.hello()
+        self.assertFalse(client.launch(DOCUMENT, None, "tab", None)["window_live"])
 
 
 if __name__ == "__main__":

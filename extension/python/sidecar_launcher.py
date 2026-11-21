@@ -102,6 +102,11 @@ OLD_PLUGIN = ("Your Hermes plugin is older than this extension. Update atlas-sid
               "in Hermes, then click Open Sidecar again.")  # not in 8.2
 NO_ANSWER = "Hermes did not answer on port {port}. Click Open Sidecar to try again."  # not in 8.2
 BUSY = "Sidecar is busy, try again in a moment."  # not in 8.2
+# The plugin's own sentences for its coded hello refusals (contract 8.2, revision 3). The answer
+# to a hello is unsigned, so the panel shows these fixed texts, never the answer's own words.
+TURNED_OFF = "The LibreOffice plugin was turned off in Hermes."
+ENDPOINT_FAILED = "The chat endpoint failed. Click Open Sidecar to try again."
+HELLO_REFUSALS = {(503, "turned_off"): TURNED_OFF, (500, "internal"): ENDPOINT_FAILED}
 UNSUPPORTED = "Sidecar windows are not supported on this system."  # 8.1 names it, no exact text
 NO_DOCUMENT = "Sidecar opens for a Calc, Writer or Impress document."  # not in 8.2
 COULD_NOT_START = "Sidecar could not start the browser. Click Open Sidecar to try again."  # not in 8.2
@@ -315,6 +320,9 @@ class LauncherClient:
             raise LauncherError(NO_PAIRING)
         if _busy(status, value, self.current):
             raise LauncherBusy()
+        refusal = HELLO_REFUSALS.get((status, value.get("code"))) if value.get("ok") is False else None
+        if refusal is not None:
+            raise LauncherError(refusal)
         if status in (401, 404, 503) and value.get("ok") is False and "code" not in value:
             # A 0.4.0 plugin checks its bearer token before the path and has no error codes.
             raise LauncherError(OLD_PLUGIN)
@@ -353,6 +361,11 @@ class LauncherClient:
             raise LauncherBusy()
         if len(macs) != 1 or not hmac.compare_digest(macs[0], expected) or value is None:
             self._key = None  # a refused or forged answer ends the channel
+            if (not macs and counter == 1 and status == 401 and value is not None
+                    and value.get("code") == "launcher_auth"):
+                # The hello already proved this plugin; an unsigned refusal of the first call means
+                # its channel was displaced (or expired) in between. Nothing ran: try again.
+                raise LauncherError(NO_ANSWER.format(port=self.port))
             raise LauncherError(NOT_YOURS.format(port=self.port))
         return status, value
 
