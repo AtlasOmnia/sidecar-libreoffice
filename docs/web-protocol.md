@@ -30,6 +30,17 @@ refusal, the plugin's coded hello refusals and an unsigned refusal of the first 
 own panel texts (8.2); `terminate` takes a `wait` (13.2); and on Windows the extension's
 listener binds its port exclusively too (1). Revision 2 callers keep working: a body without
 `send_id` is accepted.
+**Revision 4 (fix round 2 of the 0.5.0 review)**: one `send_id` starts at most one run: a
+request that repeats a Send still being admitted waits for that admission and answers with the
+same turn, the reservation and the published turn change in one step, and an id whose turn is
+no longer current is refused with the new code `already_sent` (6.3, 9.1); the page never concludes
+that a Send did not arrive, ignores state answers older than a Send or New chat, keeps Send and
+New chat off while a Send is undecided and offers Try again with the same `send_id` (6.3, 6.6,
+7.2); a user Stop's thread is registered before it starts, its whole call has one deadline, and
+unload cuts it off and joins it; unload asks known runs to stop before it waits for the listener,
+which it ends at once and waits for within the budget (6.5, 13.1); the Windows exclusive bind
+covers 127.0.0.1 on the port, not every address (1); a non-ASCII path is 404 before any MAC (3.2);
+the busy refusal is best effort (12).
 Labels such as R18, D1 or S1 are the requirement, owner-decision and spike numbers of the 0.5.0
 design review; the spike results that fixed a detail are quoted where they apply.
 
@@ -41,7 +52,9 @@ top-left of the main display, y downwards, in points (not device pixels).
 
 - The plugin listens on `127.0.0.1:<chat_port>` only (0 means off: no listener at all). On
   Windows the port is bound with `SO_EXCLUSIVEADDRUSE` and without `SO_REUSEADDR`, so no other
-  socket, of any user account, can bind it while the listener is up; elsewhere `SO_REUSEADDR`
+  socket, of any user account, can bind that address and port (a wildcard bind to the same port
+  number still succeeds and, per Microsoft, covers every address but this one; not checked)
+  while the listener is up; elsewhere `SO_REUSEADDR`
   stays (it allows a restart over `TIME_WAIT` connections; a second bind still fails). The
   extension's listener (8660, `hermes_bridge.BoundedHTTPServer`) binds the same way (revision 3).
   Checked on Windows 11 for the extension's listener: with `SO_REUSEADDR` (earlier 0.5.0 builds),
@@ -208,10 +221,15 @@ and the launcher refuses an answer whose MAC is missing or wrong (treated as *no
 choose a panel text (8.2): the busy refusal of section 12, and a 401 `launcher_auth` to the
 first call after the hello. Neither authorises anything.
 
+**Paths (revision 4).** The MAC covers the path as ASCII. A request whose path is not printable
+ASCII is refused as an unknown path (404 `not_found`, unsigned) before any MAC is computed; the
+channel it names is not touched.
+
 **Deadlines (revision 3).** Every launcher request is bounded by one deadline for the whole call
 (connect, send, status line, headers, body): 5 s per call, and a status poll never runs past
 the 20 s outcome limit. At quit the launcher's hello and `host_quit` share one 2 s deadline, and
-everything it does at quit (including waiting for the browser) is bounded by 4 s.
+everything it does at quit (including waiting for the browser) is bounded by 4 s (an application
+budget for its requests and waits; a stalled file operation is not interrupted by it).
 
 ### 3.3 Test vectors
 
@@ -414,17 +432,33 @@ characters) per Send and uses it for every attempt of that Send. When the sessio
 was started with the same `send_id`, the plugin answers 200 `{"ok": true, "turn": <turn view>,
 "replayed": true}` with that turn, working or ended, and sends nothing to Hermes; with the same
 `send_id` and another message (compared as a SHA-256 digest of the trimmed text) it answers 400
-`bad_request`. While the first attempt is still being admitted a retry gets 409 `busy`. A
-malformed `send_id` is 400 `bad_request`. The page:
+`bad_request`. A malformed `send_id` is 400 `bad_request`.
+
+**One admission per Send (revision 4).** From the moment a request with a new `send_id` reserves
+the session's admission until the turn is published (or the admission is refused) is one
+transition: the reservation is released in the same critical section that publishes the turn,
+so no request ever sees neither. A request with the `send_id` being admitted (and the same
+message) waits for that admission, at most one long-poll (25 s), and then answers 200 with the
+published turn (`replayed: true`), or the same refusal the admission got, or 409 `busy` if it is
+still not decided; with another message it answers 400 `bad_request` at once. Any other
+`/api/chat` while an admission is in progress answers 409 `busy`. The plugin keeps the
+`send_id` values of the session's last 64 published turns, also across New chat: a request
+with one of them whose turn is no longer the current one answers 409 `already_sent` ("This message
+was already sent to Hermes; it is not sent again.") and starts nothing. A refused admission
+records nothing: the same `send_id` may be sent again. The page:
 
 - retries a Send whose answer did not arrive (network error) or was 503 `endpoint_busy` (nothing
   was read), and a retry answered 409 `busy`, at most twice, 1 s apart, with the same `send_id`;
-- after three unanswered attempts sends nothing more for that Send, says it is not known whether
-  Hermes received the message (check the document before sending it again), keeps Send disabled
-  and lets the state poll decide: a turn it has not followed is followed (7.2), and an answer
-  without such a turn means the message never arrived, which the page says, putting the message
-  back in the input box;
-- keeps New chat disabled while a Send is undecided.
+- after three unanswered attempts sends nothing more on its own and says it is not known yet
+  whether Hermes received the message. The Send stays **undecided**: Send and New chat stay
+  disabled (no fresh `send_id` can be sent), and **Try again** (`desk-connect-button`) sends the
+  same request once more. Only that Send's own turn decides it: a state answer whose turn has
+  this `send_id` is followed (7.2); a state answer without it proves nothing (the first request
+  may still be in admission, or the answer may have left the plugin before the request arrived)
+  and the page never says the message did not arrive. A refusal of the same `send_id` (other
+  than `busy` and `endpoint_busy`) decides it as not started (the message goes back to the input
+  box); `already_sent` decides it as sent earlier;
+- ignores a state answer to a request sent before the latest Send or New chat began.
 
 ### 6.4 `GET /api/turn?id=<turn>&seq=<n>&have=<n>` (cursor long-poll)
 
@@ -475,9 +509,15 @@ Turn view (used in 6.2 and 6.3) is the same `turn` object without `text` and `te
 ### 6.5 `POST /api/turn/stop`
 
 Body `{"turn": "<22>"}`. `ChatBridge.request_stop` sets `stop_requested` and, once the run's id is
-known, sends the stop to Hermes at once from a short-lived thread with the run's own key, bounded
-by 10 s and the unload budget, so a status poll in flight does not delay it; before the id is
-known the worker sends it as soon as creation answers. One stop per run is in flight at a time.
+known, sends the stop to Hermes at once from a short-lived thread with the run's own key, so a
+status poll in flight does not delay it; before the id is known the worker sends it as soon as
+creation answers. Revision 4: that thread and its request are registered with the endpoint
+before the thread starts; the whole request (connect, send, status line, headers, body) has one
+deadline, 10 s or the unload budget's end, whichever is first, re-read before every send and
+read (an answer trickled byte by byte does not extend it); unload cuts it off (nothing more is
+connected or sent on it; the socket it reads from is shut down even after `http.client` dropped
+it for `Connection: close`) and joins the thread, waiting at most 0.25 s past the budget for a
+cut-off thread to end. The stop of a run already seen to settle does not hold unload up. One stop per run is in flight at a time.
 The worker driving the run alone settles and releases it and reports outcome `user` (a stop's
 acknowledgement alone releases nothing; a run Hermes reports completed before the stop took
 effect still reports what Hermes reported). 202 with the turn view (state `stopping`), or 200
@@ -486,7 +526,10 @@ with the final view when the turn already ended. 404 `unknown_turn`.
 ### 6.6 `POST /api/new-chat`
 
 Body `{}`. Refused with 409 `turn_running` ("Wait for the reply, or press Stop first.") while the
-session's run is **driven** (`ChatBridge.session_state(...) == "driven"`). With an unresolved run
+session's run is **driven** (`ChatBridge.session_state(...) == "driven"`) or a Send is being
+admitted. The page sends New chat only with no turn, no Send in flight and no undecided Send,
+sends no Send while it waits for the answer, and ignores state answers to requests sent before
+New chat was answered (revision 4). With an unresolved run
 it is allowed: the session gets a new `lo-<32 hex>` id from the same generator, the old run stays
 owned under the old id (it still counts against `MAX_ACTIVE`). 200 `{"ok": true, "chat_label": "…"}`.
 
@@ -586,7 +629,8 @@ Cache-Control: no-cache
   already ended, makes the page follow it with `/api/turn` from the reported `seq` and `have=0`
   (an ended turn answers at once), so its reply or
   outcome is shown exactly once; a turn already followed is never shown again. Every Send carries
-  a `send_id` (6.3).
+  a `send_id` (6.3). While a Send is undecided only a turn with that `send_id` is followed
+  (revision 4).
 
 ### 7.3 DOM ids the page must keep
 
@@ -714,6 +758,7 @@ there. Not yet verified: 2× displays and a second display (G6).
 | `plugin_inactive`, `worker_failed` | 503 | 6.3 |
 | `message_invalid` | 400 | 6.3 |
 | `unknown_turn` | 404 | 6.4, 6.5 |
+| `already_sent` | 409 | 6.3: an earlier `send_id` of this session whose turn is no longer current (revision 4) |
 | `turn_running` | 409 | 6.6 |
 | `turned_off` | 503 | the plugin is unloading |
 | `internal` | 500 | "the chat endpoint failed" (never exception text) |
@@ -771,7 +816,8 @@ parallel static or poll requests stay below `MAX_HANDLERS` (16). The listen back
 connection accepted while all 16 handler slots are taken gets the prepared answer 503
 `{"ok": false, "error": "the chat endpoint is busy; try again shortly", "code": "endpoint_busy"}`
 (unsigned, on every route, before the request is read): nothing was processed, the caller may
-try again. The launcher shows it as busy (*Sidecar is busy, try again in a moment.*, 8.2), not as
+try again. It is best effort: the connection is closed right after it, so a client may see a
+reset instead of the answer; the page treats a network error on Send the same way. The launcher shows it as busy (*Sidecar is busy, try again in a moment.*, 8.2), not as
 an older plugin.
 
 ## 13. Interfaces between lanes (Python)
@@ -788,7 +834,7 @@ an older plugin.
 | `ChatBridge.begin_turn(session_id, content, on_done) -> run` | `_claim` now (raises 409/429/503), then one worker runs `_drive`; `on_done(run, TurnOutcome)` once |
 | `ChatBridge.request_stop(run) -> bool` | user Stop and *window gone*: sets `stop_requested` and sends the stop at once when the run id is known (6.5); False when already settled |
 | `ChatBridge.session_state(session_id)` | `"driven"`, `"unresolved"` or `None` (New chat rule) |
-| `ChatBridge.owned_runs()`, `.closed`, `.close()` | unchanged |
+| `ChatBridge.owned_runs()`, `.closed`, `.close()` | unchanged signatures; `close()` (revision 4) closes ingress, ends the web sessions, starts the stop threads for known runs, then ends the listener (`BoundedHTTPServer.stop_serving`, which wakes the accept loop at once and waits at most what is left of the budget), waits for the runs and user Stops, and finally cuts off every status poll and user Stop still in flight and joins the user Stop threads |
 | `compose_message(message, document)`, `SESSION_RE`, `MAX_MESSAGE`, `MAX_REPLY`, `MAX_ACTIVE` | unchanged |
 | `TurnOutcome(kind, status, text)`, `TurnOutcome.KINDS`, `TurnOutcome.from_error(exc)` | outcome kinds of 6.4 |
 | `ChatError`, `ChatStopped`, `USER_STOPPED`, `OUTCOME_UNCERTAIN`, `PLUGIN_TURNED_OFF`, `TURN_WORKER_FAILED` | errors and texts |
