@@ -47,12 +47,14 @@ import socket
 import sys
 import logging
 import re
+import selectors
 import threading
 import time
 from typing import Any, Callable, Optional
 import uuid
 
 _WINDOWS = sys.platform == "win32"
+_ServerSelector = getattr(selectors, "PollSelector", selectors.SelectSelector)   # as socketserver picks it
 
 log = logging.getLogger(__name__)
 
@@ -264,6 +266,9 @@ class BoundedHTTPServer(ThreadingHTTPServer):
 
     The limit is checked in the accepting thread, before a worker thread exists; a connection
     over the limit gets the prepared ``refusal`` response without waiting and is closed.
+    ``stop_serving(timeout)`` ends the accept loop without waiting out its poll interval and
+    waits for it at most ``timeout`` seconds in all (the listener is closed by whichever side
+    ends last).
     """
 
     daemon_threads = True
@@ -284,7 +289,72 @@ class BoundedHTTPServer(ThreadingHTTPServer):
     def __init__(self, address: tuple[str, int], handler: type, *, max_handlers: int, refusal: bytes) -> None:
         self._slots = threading.BoundedSemaphore(max_handlers)
         self._refusal = refusal
+        self._stop = threading.Event()     # stop_serving() was called
+        self._served = threading.Event()   # the accept loop has ended
+        self._waker: Optional[socket.socket] = None   # stop_serving()'s wake connection, open until the loop ends
+        self._waker_lock = threading.Lock()
         super().__init__(address, handler)
+
+    def serve_forever(self, poll_interval: float = 0.5) -> None:
+        """socketserver's accept loop, ended by ``stop_serving`` (which also wakes it)."""
+        try:
+            with _ServerSelector() as selector:
+                selector.register(self, selectors.EVENT_READ)
+                while not self._stop.is_set():
+                    ready = selector.select(poll_interval)
+                    if self._stop.is_set():
+                        break
+                    if ready:
+                        self._handle_request_noblock()
+                    self.service_actions()
+        finally:
+            self._served.set()
+            self._drop_waker()
+            if self._stop.is_set():
+                self.server_close()   # stop_serving() stopped waiting for this loop: close here
+
+    def stop_serving(self, timeout: Optional[float]) -> bool:
+        """End the accept loop and wait for it at most ``timeout`` seconds (None: no limit),
+        counted from this call: waking the loop takes none of it (a non-blocking loopback
+        connection makes a waiting select() return at once, so this does not wait out the poll
+        interval), and the wait gets what is left. True when the loop has ended; the listener is
+        then closed here, else the loop closes it when it ends."""
+        until = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        self._stop.set()
+        if not self._served.is_set():
+            self._wake()
+        ended = self._served.wait(None if until is None else max(0.0, until - time.monotonic()))
+        if ended:
+            self._drop_waker()
+            self.server_close()
+        return ended
+
+    def _wake(self) -> None:
+        """Connect to the listener without waiting: the kernel completes a loopback handshake on
+        its own, which makes the listener readable. The socket stays open until the loop ends
+        (closing it at once could withdraw the connection before the loop sees it)."""
+        with self._waker_lock:
+            if self._waker is not None or self._served.is_set():
+                return
+            try:
+                waker = socket.socket(self.address_family, socket.SOCK_STREAM)
+            except OSError:
+                return
+            self._waker = waker
+            try:
+                waker.setblocking(False)
+                waker.connect_ex(self.server_address)
+            except OSError:
+                pass
+
+    def _drop_waker(self) -> None:
+        with self._waker_lock:
+            waker, self._waker = self._waker, None
+        if waker is not None:
+            waker.close()
+
+    def shutdown(self) -> None:
+        self.stop_serving(None)
 
     def process_request(self, request: Any, client_address: Any) -> None:
         if not self._slots.acquire(blocking=False):
@@ -366,10 +436,11 @@ class ChatBridge:
     def close(self, budget: Optional[float] = None) -> int:
         """Close ingress, then stop the runs this endpoint owns, all within ONE time budget.
 
-        Ordered for the plugin's unload: new requests are refused first, the listener is shut
-        down, and every owned run whose id is known is asked to stop through the API server's
-        documented stop control (with the key it was started with) by a thread of its own, also
-        when its chat thread is blocked in a status poll, and watched until it settles. Every call
+        Ordered for the plugin's unload: new requests are refused first, then every owned run
+        whose id is known is asked to stop through the API server's documented stop control (with
+        the key it was started with) by a thread of its own, also when its chat thread is blocked
+        in a status poll, and watched until it settles; only then is the listener shut down, and
+        that waits at most what is left of the budget (on an event loop, not at all). Every call
         gets only the time left, so unresponsive endpoints cannot add up; close() tries to cut off
         status polls started before it when it returns (a poll already reading a response body
         may stay blocked until that read completes or times out). Returns how many runs are still owned when it
@@ -397,13 +468,12 @@ class ChatBridge:
             polls = list(self._polls)                         # started before close: not budget-bound
             self._lock.notify_all()
         self._closing.set()
-        if server is not None:
-            server.shutdown()
-            server.server_close()
-        for run, drive in workers:   # one thread per run, whoever else is waiting on it
+        for run, drive in workers:   # one thread per run, whoever else is waiting on it, before the listener
             threading.Thread(target=self._close_worker, args=(run, deadline, drive),
                              name="HermesLibreOfficeChatStop", daemon=True).start()
         on_loop = _on_event_loop_thread()
+        if server is not None:   # the accept loop ends at once (woken); waiting for it is bounded too
+            server.stop_serving(0.0 if on_loop else max(0.0, deadline - time.monotonic()))
         with self._lock:
             while not on_loop and (self._close_workers or any(run.driven for run in self._runs.values())):
                 left = deadline - time.monotonic()
