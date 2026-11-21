@@ -4,9 +4,13 @@
 
 A user Stop is sent by a short-lived thread of its own (docs/web-protocol.md 6.5). That thread is
 registered before it starts, its whole call (connect, send, answer) has ONE deadline, and close()
-cuts it off and joins it: after close() returns it neither runs nor sends, also when the API
-server stalls the answer or trickles it byte by byte, or when the thread had not even connected
-yet (critic2 R3). close() asks every known run to stop before it waits for the listener to shut
+cuts it off: after the cut-off it sends no Stop payload, also when the API server stalls the
+answer or trickles it byte by byte, or when the thread had not even connected yet (critic2 R3).
+That is a promise about what is sent, not that every thread has ended: a thread that has not
+started, or is still inside an operating-system connect, can outlive close() and then sends
+nothing; on an event loop close() returns at once and the cut-off comes at the end of the budget,
+so a Stop not yet connected can still be sent before then (6.5). close() asks every known run to
+stop before it waits for the listener to shut
 down, and that wait is bounded by the same budget (critic2 R4). A close() that runs while a
 registered Stop's thread has not started yet neither fails nor joins it (critic2 R5), and every
 wait of close() and of the listener's shutdown ends by ONE deadline: no sender and no phase gets

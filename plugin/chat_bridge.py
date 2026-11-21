@@ -487,10 +487,10 @@ class BoundedHTTPServer(ThreadingHTTPServer):
 
     def stop_serving(self, timeout: Optional[float]) -> bool:
         """End the accept loop and wait for it at most ``timeout`` seconds (None: no limit),
-        counted from this call: waking the loop takes none of it (a non-blocking loopback
-        connection makes a waiting select() return at once, so this does not wait out the poll
-        interval), and the wait gets what is left. True when the loop has ended; the listener is
-        then closed here, else the loop closes it when it ends."""
+        counted from this call: waking the loop adds no blocking connect wait (a non-blocking
+        loopback connection makes a waiting select() return at once, so this does not wait out
+        the poll interval), and the following wait uses the remaining deadline. True when the
+        loop has ended; the listener is then closed here, else the loop closes it when it ends."""
         until = None if timeout is None else time.monotonic() + max(0.0, timeout)
         self._stop.set()
         if not self._served.is_set():
@@ -747,8 +747,8 @@ class ChatBridge:
             for thread in ended:   # past its last step under the lock: only the thread's exit is left
                 thread.join(max(0.0, join_by - time.monotonic()))
             if lingering:
-                log.warning("libreoffice chat: %d user Stop request(s) had not ended when the endpoint closed (still "
-                            "connecting or not started); they were cut off and send nothing more", lingering)
+                log.warning("libreoffice chat: %d user Stop request(s) had not ended when the endpoint closed; "
+                            "they were cancelled and send nothing more", lingering)
         self._run_close_hooks(1, 0.0 if on_loop else max(0.0, deadline - time.monotonic()))
         if remaining:
             log.warning("libreoffice chat endpoint closed with %d run(s) not confirmed stopped; they may still "
