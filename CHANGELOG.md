@@ -50,6 +50,19 @@ Tested: on macOS 27.2.1 (Apple silicon) with LibreOffice 26.8.2.2 and Chrome 158
 - A reconnected window does not show earlier messages. No live text or tool rows during a reply.
 - Docs: README screenshots of the sidebar in Calc, Writer and Impress (`docs/assets/screenshots/`) show the native panel of 0.4.0.
 
+## [0.4.1] - 2026-11-21
+
+A fix release for the two loopback listeners. No tool, setting, port or protocol changes; the extension keeps its 0.4.0 identifier.
+
+Tested: the unit suite on macOS (Python 3.9, 3.11 and 3.13), in a Linux container (Python 3.11) and on Windows 11 (python.org Python 3.14); on Windows 11 both listeners refused a second socket on their 127.0.0.1 address and port while they listened (with 0.4.0 a second socket that set SO_REUSEADDR could bind it) and bound the same port again at once after a close, 20 times each; `hermes plugins validate --install-deps` with Hermes Agent 0.23.1. Not run for 0.4.1: the `.oxt` installed into LibreOffice, the plugin loaded by a Hermes gateway, and another account's socket on Windows.
+
+### Fixed
+- **Exclusive ports on Windows.** Both listeners, the extension's bridge on 8660 and the plugin's chat endpoint (8661 when turned on), bind 127.0.0.1 on their port with `SO_EXCLUSIVEADDRUSE` instead of `SO_REUSEADDR`. With `SO_REUSEADDR`, which 0.4.0 used, a second socket could bind the same 127.0.0.1 address and port while the listener ran (seen on Windows 11 for both listeners, with a socket of the same account). That bind is now refused. A bind of the same port number on the wildcard address (`0.0.0.0`) still succeeds; in the same check such a socket did not receive a connection made to 127.0.0.1. macOS and Linux keep `SO_REUSEADDR`, where a second bind of a port in use fails anyway.
+- **Unload asks runs to stop first.** When the plugin is disabled or reloaded while a sidebar chat runs, the chat endpoint now asks the runs whose IDs it knows to stop before it shuts its listener down, and wakes the listener's accept loop at once instead of waiting out its 0.5-second poll. Waiting for the listener is bounded by what is left of the 10-second budget, and on Hermes's event loop it waits at most 0.05 seconds, so that the port is normally free again when unload returns. In 0.4.0 the listener shutdown came first and took up to 0.5 seconds of the budget (longer while the accept thread was busy) before any stop was sent, and it blocked the event loop for that time; with a short budget a run could be left without a stop request. Unchanged from 0.4.0: a stop can still go out after unload returns. On Hermes's event loop the stops continue in the background within the same budget, a run whose ID arrives only after the budget is asked to stop once, best effort, and a single API call already under way can run somewhat past the budget.
+
+### Changed
+- Docs: README screenshots of the sidebar in Calc, Writer and Impress (`docs/assets/screenshots/`).
+
 ## [0.4.0] - 2026-11-19
 
 First public release. Workflow parity with the Sidecar tools for Microsoft Excel, Word and PowerPoint (baseline `7a565c9`): 55 tools, up from 31. Each change has stale-target checks, a truthful uncertain or partial outcome and an undo contract, and was accepted natively on LibreOffice 26.8.2.2 in disposable profiles. `docs/sidecar-parity.md` maps every Sidecar tool to its LibreOffice counterpart.

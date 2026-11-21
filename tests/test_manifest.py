@@ -107,6 +107,16 @@ class ManifestRegistrationTests(unittest.TestCase):
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
         self.assertRegex(changelog, r"\n## \[0\.5\.0\] - (Unreleased|\d{4}-\d{2}-\d{2})\n")
 
+    def test_catalog_setup_tag_matches_the_release_version(self):
+        """The catalog card sends users to build the extension at a tag: it must be this release's."""
+        import re
+        manifest = (ROOT / "plugin" / "plugin.yaml").read_text(encoding="utf-8")
+        version = re.search(r"^version: (\S+)$", manifest, re.M).group(1)
+        lines = (ROOT / "catalog" / "atlas-sidecar-libreoffice.yaml").read_text(encoding="utf-8").splitlines()
+        description = next(line for line in lines if line.startswith("description: "))
+        self.assertEqual(re.findall(r"\bat tag v(\d+\.\d+\.\d+)", description), [version])
+        self.assertEqual(set(re.findall(r"\btag v(\d+\.\d+\.\d+)", "\n".join(lines))), {version})
+
     def test_shipped_files_name_no_private_host_or_home_path(self):
         """No private host name, home path or volume path in shipped source."""
         import re
