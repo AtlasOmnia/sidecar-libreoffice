@@ -43,5 +43,5 @@ def raise_pid(pid: int) -> bool:
     return False
 
 
-def terminate(pid: int) -> None:
+def terminate(pid: int, wait: float = 0.0) -> None:
     return None

@@ -18,19 +18,28 @@ from LibreOffice's main thread; network and process work runs on worker threads.
 4. **Outcome** (R11). The launcher polls the launch state for up to 20 s and reports it; there is
    no automatic second attempt.
 5. **Release**. Closing a document or quitting LibreOffice tells the plugin, which disconnects the
-   matching windows; on quit the browser this LibreOffice started is asked to quit.
+   matching windows; on quit the browser this LibreOffice started is asked to quit. Closing or
+   quitting also cancels a launch still in flight for that document: no browser starts after it,
+   and a code the plugin already minted is released (revoked) and its bootstrap file deleted.
+
+Every launcher request is bounded by ONE deadline for the whole call (connect, send, status line,
+headers and body), so a program on the chat port that trickles bytes cannot stretch a call, and
+quitting LibreOffice spends at most ``QUIT_BUDGET_SECONDS`` here.
 """
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
 import hmac
 import http.client
+import io
 import json
 import os
 from pathlib import Path
 import re
 import secrets
+import socket
 import sys
 import threading
 import time
@@ -43,8 +52,11 @@ import private_files  # noqa: E402
 
 DEFAULT_CHAT_PORT = 8661
 PROTOCOL = "sidecar-launcher/1"
-CALL_TIMEOUT_SECONDS = 5.0
-QUIT_TIMEOUT_SECONDS = 2.0
+CALL_TIMEOUT_SECONDS = 5.0      # whole-call deadline of one launcher request
+QUIT_TIMEOUT_SECONDS = 2.0      # all launcher requests made at quit (hello + host_quit), together
+QUIT_BUDGET_SECONDS = 4.0       # everything on_terminate does, waiting for the browser included
+QUIT_RESERVE_SECONDS = 1.0      # of that budget, kept for asking the browser to quit
+TERMINATE_AFTER_QUIT_SECONDS = 1.0  # a browser that started after quit began: how long to wait for it
 MAX_ANSWER_BYTES = 64 * 1024
 POLL_INTERVAL_SECONDS = 0.5
 POLL_LIMIT_SECONDS = 20.0
@@ -89,6 +101,7 @@ ALREADY_OPEN = "Sidecar is already open. Switch to it from the Dock or taskbar."
 OLD_PLUGIN = ("Your Hermes plugin is older than this extension. Update atlas-sidecar-libreoffice "
               "in Hermes, then click Open Sidecar again.")  # not in 8.2
 NO_ANSWER = "Hermes did not answer on port {port}. Click Open Sidecar to try again."  # not in 8.2
+BUSY = "Sidecar is busy, try again in a moment."  # not in 8.2
 UNSUPPORTED = "Sidecar windows are not supported on this system."  # 8.1 names it, no exact text
 NO_DOCUMENT = "Sidecar opens for a Calc, Writer or Impress document."  # not in 8.2
 COULD_NOT_START = "Sidecar could not start the browser. Click Open Sidecar to try again."  # not in 8.2
@@ -99,6 +112,30 @@ TOKEN_INVALID = "The pairing token is invalid; restart LibreOffice."
 
 class LauncherError(Exception):
     """A failure whose message is the panel text to show."""
+
+
+class LauncherBusy(LauncherError):
+    """The plugin refused the call because all its request slots were in use (nothing happened)."""
+
+    def __init__(self) -> None:
+        super().__init__(BUSY)
+
+
+# The plugin's busy refusal: code ``busy`` (0.5.0 after fix round 1); the 0.5.0 endpoint first
+# answered it without a code but with this sentence.
+BUSY_CODE = "busy"
+BUSY_SENTENCE = "the chat endpoint is busy; try again shortly"
+
+
+def _busy(status: int, value: dict[str, Any], current: bool) -> bool:
+    """Is this unsigned answer the plugin's busy refusal? A 503 without any ``code`` counts as
+    busy only from a port that already proved to be a 0.5.0 plugin; from an unknown one it stays
+    the older-plugin answer. It only chooses a panel text, never authorises anything."""
+    if status != 503 or value.get("ok") is not False:
+        return False
+    if value.get("code") == BUSY_CODE or value.get("error") == BUSY_SENTENCE:
+        return True
+    return current and "code" not in value
 
 
 def b64u(data: bytes) -> str:
@@ -149,17 +186,80 @@ def read_pairing_token(path: Path) -> str:
     return token
 
 
+def _left(deadline: float) -> float:
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise socket.timeout("the launcher call ran out of time")
+    return left
+
+
+class _DeadlineReader(io.RawIOBase):
+    """Socket reads bounded by ONE absolute deadline: every recv gets only the time that is left,
+    so an answer trickled byte by byte cannot outlast the call the way a per-recv timeout allows."""
+
+    def __init__(self, sock: Any, deadline: float, holder: Any) -> None:
+        super().__init__()
+        # ``holder`` is the stdlib's own socket file: it keeps the descriptor open after the
+        # connection object closes its socket (as http.client does for "Connection: close").
+        self._sock, self._deadline, self._holder = sock, deadline, holder
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: Any) -> int:
+        self._sock.settimeout(_left(self._deadline))
+        return self._sock.recv_into(buffer)
+
+    def close(self) -> None:
+        try:
+            self._holder.close()
+        finally:
+            super().close()
+
+
+class _DeadlineResponse(http.client.HTTPResponse):
+    def __init__(self, sock: Any, debuglevel: int = 0, method: str | None = None, url: str | None = None, *,
+                 deadline: float) -> None:
+        super().__init__(sock, debuglevel, method, url)
+        self.fp = io.BufferedReader(_DeadlineReader(sock, deadline, self.fp))
+
+
+class DeadlineConnection(http.client.HTTPConnection):
+    """An HTTP connection whose connect, sends and reads share one absolute deadline
+    (``time.monotonic()`` seconds); past it every step raises ``socket.timeout``."""
+
+    def __init__(self, host: str, port: int, *, deadline: float) -> None:
+        super().__init__(host, port, timeout=_left(deadline))
+        self._deadline = deadline
+        self.response_class = functools.partial(_DeadlineResponse, deadline=deadline)
+
+    def connect(self) -> None:
+        self.timeout = _left(self._deadline)
+        super().connect()
+
+    def send(self, data: Any) -> None:
+        if self.sock is not None:
+            self.sock.settimeout(_left(self._deadline))
+        super().send(data)
+
+
 class LauncherClient:
     """One channel to the plugin's /launcher routes (contract sections 3 and 4).
 
     Open a new client for each user action. Any failure drops the channel; nothing is retried.
+    Each call is bounded by ``timeout`` seconds in total, and by ``deadline`` (an absolute
+    ``time.monotonic()`` value shared by all calls on this client) when one is set. ``current``
+    says this port already proved to be a 0.5.0 plugin (it chooses the busy text, see _busy).
     """
 
     def __init__(self, port: int, read_token: Callable[[], str], *, timeout: float = CALL_TIMEOUT_SECONDS,
-                 connect: Callable[..., Any] = http.client.HTTPConnection) -> None:
+                 deadline: float | None = None, current: bool = False,
+                 connect: Callable[..., Any] = DeadlineConnection) -> None:
         self.port = port
         self._read_token = read_token
         self._timeout = timeout
+        self.deadline = deadline
+        self.current = current
         self._connect = connect
         self._key: bytes | None = None
         self._channel = ""
@@ -168,7 +268,13 @@ class LauncherClient:
 
     def _exchange(self, method: str, path: str, body: bytes | None,
                   headers: dict[str, str]) -> tuple[int, bytes, list[str]]:
-        connection = self._connect("127.0.0.1", self.port, timeout=self._timeout)
+        deadline = time.monotonic() + self._timeout
+        if self.deadline is not None:
+            deadline = min(deadline, self.deadline)
+        try:
+            connection = self._connect("127.0.0.1", self.port, deadline=deadline)
+        except OSError:
+            raise LauncherError(NO_ANSWER.format(port=self.port)) from None
         try:
             sent = {"Host": f"127.0.0.1:{self.port}", "Connection": "close", "Accept-Encoding": "identity"}
             if body is not None:
@@ -207,6 +313,8 @@ class LauncherClient:
         value = self._json(raw) or {}
         if status == 503 and value.get("code") == "no_pairing":
             raise LauncherError(NO_PAIRING)
+        if _busy(status, value, self.current):
+            raise LauncherBusy()
         if status in (401, 404, 503) and value.get("ok") is False and "code" not in value:
             # A 0.4.0 plugin checks its bearer token before the path and has no error codes.
             raise LauncherError(OLD_PLUGIN)
@@ -220,6 +328,7 @@ class LauncherClient:
         self._key = channel_key(token, self.port, client_nonce, server_nonce)
         self._channel = server_nonce
         self._counter = 0
+        self.current = True
         chat = value.get("chat")
         self.chat = chat if isinstance(chat, dict) else None
         return self.chat or {}
@@ -238,6 +347,10 @@ class LauncherClient:
         })
         expected = response_mac(self._key, counter, status, raw)
         value = self._json(raw)
+        if not macs and _busy(status, value or {}, True):
+            # Refused before any handler read the request, so the plugin did not count it.
+            self._counter -= 1
+            raise LauncherBusy()
         if len(macs) != 1 or not hmac.compare_digest(macs[0], expected) or value is None:
             self._key = None  # a refused or forged answer ends the channel
             raise LauncherError(NOT_YOURS.format(port=self.port))
@@ -410,9 +523,29 @@ def platform_adapter(platform: str | None = None) -> Any:
 # ---------------------------------------------------------------- the state machine
 
 
+class _Cancelled(Exception):
+    """The document closed or LibreOffice is quitting: this launch stops where it is."""
+
+
+class _Launch:
+    """One Open Sidecar click for one document, from the click until its worker ends."""
+
+    __slots__ = ("document_id", "cancelled", "spawning", "client")
+
+    def __init__(self, document_id: str) -> None:
+        self.document_id = document_id
+        self.cancelled = False   # set under the launcher lock by on_document_closed / on_terminate
+        self.spawning = False    # the browser (or the default handler) is being started right now
+        self.client: LauncherClient | None = None
+
+
 class Launcher:
     """One per LibreOffice process. ``open`` is called on the main thread from the button;
-    ``report(text, busy)`` is called from worker threads (the panel marshals it)."""
+    ``report(text, busy)`` is called from worker threads (the panel marshals it).
+
+    Closing a document or quitting cancels that document's launch in flight (see ``_launch``):
+    the worker checks after every blocking step, never starts a browser once cancelled, releases a
+    code the plugin already minted, deletes its bootstrap file, and reports nothing."""
 
     def __init__(self, *, adapter: Any = None, platform: str | None = None,
                  port: Callable[[], int] = chat_port, client: Callable[..., LauncherClient] = LauncherClient,
@@ -427,9 +560,12 @@ class Launcher:
         self._clock = clock
         self._start = start or _start_thread
         self._lock = threading.Lock()
-        self._inflight: set[str] = set()
+        self._settled = threading.Condition(self._lock)
+        self._launches: dict[str, _Launch] = {}  # in flight, by document
         self._opened: set[str] = set()  # documents with a window this LibreOffice opened
         self._ever_opened = False
+        self._current: set[int] = set()  # ports whose hello proved a 0.5.0 plugin
+        self._bootstraps: set[Path] = set()  # bootstrap files written and not yet deleted
         self._browser_pid: int | None = None
         self._read_token: Callable[[], str] | None = None
         self._terminated = False
@@ -445,17 +581,26 @@ class Launcher:
         """Where the pairing token is read from (the bridge folder of this profile)."""
         self._read_token = read_token
 
-    def _new_client(self, timeout: float = CALL_TIMEOUT_SECONDS) -> LauncherClient:
+    def _new_client(self, timeout: float = CALL_TIMEOUT_SECONDS, deadline: float | None = None) -> LauncherClient:
         if self._read_token is None:
             raise LauncherError(TOKEN_MISSING)
-        return self._client(self._port(), self._read_token, timeout=timeout)
+        port = self._port()
+        with self._lock:
+            current = port in self._current
+        return self._client(port, self._read_token, timeout=timeout, deadline=deadline, current=current)
+
+    def _hello(self, client: LauncherClient) -> dict[str, Any]:
+        chat = client.hello()
+        with self._lock:
+            self._current.add(client.port)
+        return chat
 
     def probe(self, report: Callable[[str, bool], None]) -> None:
         """Panel opened: one hello on a worker, to show chat-off or pairing problems early.
         It starts no process and mints no launch code."""
         def run() -> None:
             try:
-                self._new_client().hello()
+                self._hello(self._new_client())
                 text = IDLE if self.adapter is not None else UNSUPPORTED
             except LauncherError as exc:
                 text = str(exc)
@@ -468,7 +613,8 @@ class Launcher:
              frame: tuple[int, int, int, int] | None, work_area: tuple[int, int, int, int] | None,
              report: Callable[[str, bool], None]) -> bool:
         """The Open Sidecar button. Returns False when nothing was started (a launch for this
-        document is already in progress, or the document is not supported)."""
+        document is already in progress, LibreOffice is quitting, or the document is not
+        supported)."""
         if not isinstance(document, dict) or document.get("type") not in ("calc", "writer", "impress"):
             report(NO_DOCUMENT, False)
             return False
@@ -479,92 +625,160 @@ class Launcher:
             host_scheme = None
         key = document["document_id"]
         with self._lock:
-            if key in self._inflight or self._terminated:
+            running = self._launches.get(key)
+            if self._terminated or (running is not None and not running.cancelled):
                 return False
-            self._inflight.add(key)
+            launch = self._launches[key] = _Launch(key)
         report(OPENING, True)
         doc = {"document_id": key, "title": str(document.get("title", ""))[:1000], "type": document["type"]}
 
         def run() -> None:
+            text: str | None = None
             try:
-                text = self._launch(doc, host_scheme, frame, work_area)
+                text = self._launch(launch, doc, host_scheme, frame, work_area)
+            except _Cancelled:
+                text = None
             except LauncherError as exc:
                 text = str(exc)
             except Exception:
                 text = COULD_NOT_START
             finally:
                 with self._lock:
-                    self._inflight.discard(key)
-            report(text, False)
+                    if self._launches.get(key) is launch:
+                        del self._launches[key]
+                    cancelled = launch.cancelled
+                    self._settled.notify_all()
+            if text is not None and not cancelled:  # the panel of a closed document is gone
+                report(text, False)
         self._start(run, "SidecarLauncher")
         return True
 
-    def _launch(self, document: dict[str, Any], host_scheme: str | None,
+    def _check(self, launch: _Launch) -> None:
+        if launch.cancelled:
+            raise _Cancelled()
+
+    def _abandon(self, client: LauncherClient, launch: _Launch, path: Path | None) -> None:
+        """A cancelled launch whose code was minted: delete the bootstrap file, then release, so
+        the plugin revokes the code and ends any session it already started (contract 4.3)."""
+        self._remove(path)
+        with self._lock:
+            terminated = self._terminated
+        try:
+            if terminated:
+                client.release(None, "host_quit")
+            else:
+                client.release(launch.document_id, "document_closed")
+        except Exception:
+            pass
+        raise _Cancelled()
+
+    def _launch(self, launch: _Launch, document: dict[str, Any], host_scheme: str | None,
                 frame: tuple[int, int, int, int] | None, work_area: tuple[int, int, int, int] | None) -> str:
         adapter = self.adapter
-        client = self._new_client()
-        client.hello()
+        client = launch.client = self._new_client()
+        self._hello(client)
+        self._check(launch)  # closed during hello: nothing was minted
         browsers = list(adapter.find_browsers())
         mode = "app" if browsers else "tab"
         bounds = compute_bounds(frame, work_area) if mode == "app" else None
         answer = client.launch(document, host_scheme, mode, bounds)
         if answer["window_live"]:
+            self._check(launch)  # nothing minted; the close hook releases a window it opened
             pid = self._live_browser()
             if mode == "app" and pid is not None and adapter.raise_pid(pid):
                 return OPEN
             return ALREADY_OPEN
+        if launch.cancelled:  # closed while the plugin minted the code
+            self._abandon(client, launch, None)
         cache = Path(adapter.cache_dir())
         written = self._clock()
         path = write_bootstrap(answer["url"], cache)
+        with self._lock:
+            self._bootstraps.add(path)
+        # Deleted 30 s after it was written whatever happens to this worker (B4: not only after
+        # the outcome poll), and earlier at the first state other than pending.
+        self._start(lambda: self._remove_later(path, written), "SidecarLaunchCleanup")
         keep = False
         try:
-            if bounds is not None:
-                ensure_private_dirs(cache, "browser")
-                position, size = window_geometry(bounds, self._platform)
-                argv = browser_argv(browsers[0][1], profile_dir(cache), path.as_uri(), position, size,
-                                    self._platform)
-                try:
-                    pid = adapter.spawn(argv)
-                except OSError:
-                    raise LauncherError(COULD_NOT_START) from None
-                self._note_spawn(pid)
-            else:
-                try:
-                    adapter.open_default(path)
-                except OSError:
-                    raise LauncherError(COULD_NOT_START) from None
             with self._lock:
-                self._opened.add(document["document_id"])
-                self._ever_opened = True
-            state = self._follow(client, answer["launch_id"], written)
+                cancelled = launch.cancelled
+                launch.spawning = not cancelled
+            if cancelled:  # never start a browser for a closed document or while quitting
+                self._abandon(client, launch, path)
+            pid: int | None = None
+            started = False
+            try:
+                if bounds is not None:
+                    ensure_private_dirs(cache, "browser")
+                    position, size = window_geometry(bounds, self._platform)
+                    argv = browser_argv(browsers[0][1], profile_dir(cache), path.as_uri(), position, size,
+                                        self._platform)
+                    try:
+                        pid = adapter.spawn(argv)
+                    except OSError:
+                        raise LauncherError(COULD_NOT_START) from None
+                    self._note_spawn(pid)
+                else:
+                    try:
+                        adapter.open_default(path)
+                    except OSError:
+                        raise LauncherError(COULD_NOT_START) from None
+                started = True
+            finally:
+                with self._lock:
+                    launch.spawning = False
+                    cancelled = launch.cancelled
+                    terminated = self._terminated
+                    alone = not self._opened  # no other document has a window this LibreOffice opened
+                    if started and not cancelled:
+                        self._opened.add(document["document_id"])
+                        self._ever_opened = True
+                    self._settled.notify_all()
+            if cancelled:  # closed while the browser was starting: bounded cleanup
+                if pid is not None and (terminated or alone):  # the browser holds only this window
+                    self._terminate_quietly(pid, TERMINATE_AFTER_QUIT_SECONDS)
+                self._abandon(client, launch, path)
+            state = self._follow(launch, client, answer["launch_id"], written)
+            if launch.cancelled:
+                self._abandon(client, launch, path)
             if state == "pending":
-                # Still unexchanged after 20 s: report now, keep the file until 30 s.
-                keep = True
-                self._start(lambda: self._remove_later(path, written), "SidecarLaunchCleanup")
+                keep = True  # still unexchanged after 20 s: report now, the cleanup removes it at 30 s
         finally:
             if not keep:
-                remove_bootstrap(path)
+                self._remove(path)
         return {"exchanged": OPEN, "double_use": DOUBLE_USE}.get(state, DID_NOT_CONNECT)
 
-    def _follow(self, client: LauncherClient, launch_id: str, written: float) -> str:
+    def _follow(self, launch: _Launch, client: LauncherClient, launch_id: str, written: float) -> str:
         """Poll the launch state every 0.5 s for up to 20 s (R11); the first state other than
-        pending ends the wait (and the caller then deletes the bootstrap file)."""
+        pending ends the wait (and the caller then deletes the bootstrap file). A status call
+        never runs past the 20 s either, and a cancelled launch stops polling."""
+        limit = time.monotonic() + max(0.0, POLL_LIMIT_SECONDS - (self._clock() - written))
+        client.deadline = limit if client.deadline is None else min(client.deadline, limit)
         state = "pending"
-        while self._clock() - written < POLL_LIMIT_SECONDS:
+        while self._clock() - written < POLL_LIMIT_SECONDS and not launch.cancelled:
             self._sleep(POLL_INTERVAL_SECONDS)
+            if launch.cancelled:
+                break
             try:
                 state = client.status(launch_id)
+            except LauncherBusy:
+                state = "pending"
             except LauncherError:
                 state = "expired"
             if state != "pending":
                 return state
         return state
 
+    def _remove(self, path: Path | None) -> None:
+        remove_bootstrap(path)
+        with self._lock:
+            self._bootstraps.discard(path)  # type: ignore[arg-type]
+
     def _remove_later(self, path: Path, written: float) -> None:
         remaining = BOOTSTRAP_LIFETIME_SECONDS - (self._clock() - written)
         if remaining > 0:
             self._sleep(remaining)
-        remove_bootstrap(path)
+        self._remove(path)
 
     def _note_spawn(self, pid: int) -> None:
         """A second Chromium started on the same profile hands its window to the running
@@ -578,53 +792,77 @@ class Launcher:
             pid = self._browser_pid
         return pid if pid is not None and self.adapter.running(pid) else None
 
+    def _terminate_quietly(self, pid: int, wait: float) -> None:
+        try:
+            self.adapter.terminate(pid, wait=max(0.0, wait))
+        except Exception:
+            pass
+
     def on_document_closed(self, document_id: str) -> None:
-        """A document closed: disconnect its window (contract 4.3). Only for documents this
-        LibreOffice opened a window for; on a worker, never blocking the close."""
+        """A document closed: cancel its launch in flight, and disconnect the window this
+        LibreOffice opened for it (contract 4.3), on a worker, never blocking the close."""
         with self._lock:
-            if document_id not in self._opened or self._terminated:
+            if self._terminated:
+                return
+            launch = self._launches.get(document_id)
+            if launch is not None:
+                launch.cancelled = True
+            if document_id not in self._opened:
                 return
             self._opened.discard(document_id)
 
         def run() -> None:
             try:
                 client = self._new_client()
-                client.hello()
+                self._hello(client)
                 client.release(document_id, "document_closed")
             except Exception:
                 return
         self._start(run, "SidecarRelease")
 
     def on_terminate(self) -> None:
-        """LibreOffice is quitting: release every window, ask the browser this instance started
-        to quit, and delete leftover bootstrap files. Bounded and synchronous; never raises.
+        """LibreOffice is quitting: cancel launches in flight, release every window, ask the
+        browser this instance started to quit, and delete bootstrap files. Synchronous, never
+        raises, and bounded as a whole by QUIT_BUDGET_SECONDS: the launcher requests share one
+        QUIT_TIMEOUT_SECONDS deadline, whatever the program on the chat port does.
 
         LibreOffice unloads each document before it reports termination, so the per-document
         releases are already on their way (on worker threads that may not finish before the
         process exits); one synchronous ``host_quit`` covers them whenever this LibreOffice
-        opened any Sidecar window."""
+        opened a Sidecar window or has a launch in flight."""
+        started = time.monotonic()
+        budget_end = started + QUIT_BUDGET_SECONDS
+        http_end = started + QUIT_TIMEOUT_SECONDS
         with self._lock:
             if self._terminated:
                 return
             self._terminated = True
-            opened = self._ever_opened
+            for launch in self._launches.values():
+                launch.cancelled = True
+                if launch.client is not None:  # its next request ends with quit's own deadline
+                    launch.client.deadline = http_end
+            release = self._ever_opened or bool(self._launches)
             self._opened.clear()
         adapter = self.adapter
         if adapter is None:
             return
-        if opened:
+        if release:
             try:
-                client = self._new_client(timeout=QUIT_TIMEOUT_SECONDS)
+                client = self._new_client(timeout=QUIT_TIMEOUT_SECONDS, deadline=http_end)
                 client.hello()
                 client.release(None, "host_quit")
             except Exception:
                 pass
+        with self._lock:  # a browser being started right now is quit too, once its PID is known
+            self._settled.wait_for(lambda: not any(launch.spawning for launch in self._launches.values()),
+                                   timeout=max(0.0, budget_end - QUIT_RESERVE_SECONDS - time.monotonic()))
         pid = self._live_browser()
         if pid is not None:
-            try:
-                adapter.terminate(pid)
-            except Exception:
-                pass
+            self._terminate_quietly(pid, budget_end - time.monotonic())
+        with self._lock:
+            leftovers = list(self._bootstraps)
+        for path in leftovers:
+            self._remove(path)
         try:
             sweep(Path(adapter.cache_dir()))
         except Exception:

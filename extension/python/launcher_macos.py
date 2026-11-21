@@ -96,13 +96,14 @@ def raise_pid(pid: int) -> bool:
     return result.returncode == 0 and result.stdout.strip() == b"raised"
 
 
-def terminate(pid: int) -> None:
-    """Ask the browser this LibreOffice started to quit (SIGTERM: Chromium shuts down normally)."""
+def terminate(pid: int, wait: float = TERMINATE_WAIT_SECONDS) -> None:
+    """Ask the browser this LibreOffice started to quit (SIGTERM: Chromium shuts down normally),
+    then wait at most ``wait`` seconds (never more than TERMINATE_WAIT_SECONDS) for it to exit."""
     process = _CHILDREN.get(pid)
     if process is None or process.poll() is not None:
         return
     process.terminate()
     try:
-        process.wait(TERMINATE_WAIT_SECONDS)
+        process.wait(max(0.0, min(float(wait), TERMINATE_WAIT_SECONDS)))
     except subprocess.TimeoutExpired:
         pass

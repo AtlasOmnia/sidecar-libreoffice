@@ -63,8 +63,10 @@ class WindowsLaunch(unittest.TestCase):
         calls, seen, reports = [], [], []
 
         class Client:
-            def __init__(self, port, read_token, timeout=5.0):
-                pass
+            deadline = None
+
+            def __init__(self, port, read_token, timeout=5.0, **_keywords):
+                self.port = port
 
             def hello(self):
                 calls.append("hello")
@@ -85,7 +87,8 @@ class WindowsLaunch(unittest.TestCase):
                 mock.patch.dict(os.environ, {"LOCALAPPDATA": folder}), \
                 mock.patch.object(W.os, "startfile", side_effect=startfile, create=True):
             launcher = L.Launcher(adapter=W, platform="win32", port=lambda: 8661, client=Client,
-                                  sleep=lambda s: None, start=lambda fn, name: fn())
+                                  sleep=lambda s: None,
+                                  start=lambda fn, name: None if name == "SidecarLaunchCleanup" else fn())
             launcher.configure(lambda: TOKEN)
             launcher.open({"document_id": "lo:1:2", "title": "a.ods", "type": "calc"}, "light",
                           (0, 0, 1920, 1000), (0, 0, 1920, 1040), lambda text, busy: reports.append(text))

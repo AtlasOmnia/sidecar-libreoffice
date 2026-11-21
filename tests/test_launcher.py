@@ -89,6 +89,10 @@ class FakePlugin:
         self.forge_response_mac = False
         self.url_port = None
         self.released: list[dict] = []
+        self.busy_paths: list[str] = []  # answered once each with the accept-thread busy refusal
+        self.busy_answer = {"ok": False, "code": "busy", "error": "the chat endpoint is busy; try again shortly"}
+        self.trickle: dict[str, float] = {}  # path prefix -> seconds between answer bytes
+        self.trickle_headers_fast = False
         plugin = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -97,6 +101,9 @@ class FakePlugin:
 
             def _answer(self, status, payload, n=None, key=None, raw=None):
                 body = raw if raw is not None else json.dumps(payload).encode()
+                delay = next((d for prefix, d in plugin.trickle.items() if self.path.startswith(prefix)), None)
+                if delay is not None:
+                    return self._trickle(status, body, n, key, delay)
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
@@ -109,11 +116,36 @@ class FakePlugin:
                 self.end_headers()
                 self.wfile.write(body)
 
+            def _trickle(self, status, body, n, key, delay):
+                """A valid answer written one byte at a time (headers, then body)."""
+                head = f"HTTP/1.0 {status} X\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\n"
+                if key is not None:
+                    mac = L.b64u(hmac.new(key, "\n".join(["sidecar-launcher/1 response", str(n), str(status),
+                                                          hashlib.sha256(body).hexdigest()]).encode(),
+                                          hashlib.sha256).digest())
+                    head += f"X-Sidecar-MAC: {mac}\r\n"
+                head = (head + "Connection: close\r\n\r\n").encode()
+                try:
+                    if plugin.trickle_headers_fast:
+                        self.wfile.write(head)
+                        self.wfile.flush()
+                        head = b""
+                    for i in range(len(head + body)):
+                        self.wfile.write((head + body)[i:i + 1])
+                        self.wfile.flush()
+                        time.sleep(delay)
+                except OSError:
+                    pass
+                self.close_connection = True
+
             def _route(self):
                 length = int(self.headers.get("Content-Length") or 0)
                 body = self.rfile.read(length) if length else b""
                 plugin.requests.append({"method": self.command, "path": self.path,
                                         "headers": dict(self.headers.items()), "body": body})
+                if self.path in plugin.busy_paths:  # like the accept thread: before any check
+                    plugin.busy_paths.remove(self.path)
+                    return self._answer(503, plugin.busy_answer)
                 port = self.server.server_address[1]
                 if self.path == "/launcher/hello":
                     if plugin.hello_override is not None:
@@ -281,11 +313,12 @@ class ChannelClient(unittest.TestCase):
                 L.read_pairing_token(path)
             self.assertEqual(str(caught.exception), L.TOKEN_MISSING)
             path.write_text(TOKEN + "\n")
-            os.chmod(path, 0o644)
-            with self.assertRaises(L.LauncherError) as caught:
-                L.read_pairing_token(path)
-            self.assertEqual(str(caught.exception), L.TOKEN_UNSAFE)
-            os.chmod(path, 0o600)
+            if os.name != "nt":  # Windows judges the DACL; chmod there does not open the file to others
+                os.chmod(path, 0o644)
+                with self.assertRaises(L.LauncherError) as caught:
+                    L.read_pairing_token(path)
+                self.assertEqual(str(caught.exception), L.TOKEN_UNSAFE)
+                os.chmod(path, 0o600)
             self.assertEqual(L.read_pairing_token(path), TOKEN)
 
 
@@ -428,7 +461,7 @@ class FakeAdapter:
         self.raised.append(pid)
         return self.raise_ok
 
-    def terminate(self, pid):
+    def terminate(self, pid, wait=None):
         self.terminated.append(pid)
         self.alive.discard(pid)
 
@@ -440,8 +473,11 @@ class FakeClient:
         self.script = script
         self.calls: list[tuple] = []
 
+    port = 8661
+    deadline = None
+
     def factory(self):
-        def make(port, read_token, timeout=L.CALL_TIMEOUT_SECONDS):
+        def make(port, read_token, timeout=L.CALL_TIMEOUT_SECONDS, **_keywords):
             self.calls.append(("new", port, timeout))
             return self
         return make
@@ -461,7 +497,10 @@ class FakeClient:
     def status(self, launch_id):
         self.calls.append(("status", launch_id))
         states = self.script.setdefault("states", ["exchanged"])
-        return states.pop(0) if len(states) > 1 else states[0]
+        state = states.pop(0) if len(states) > 1 else states[0]
+        if state == "busy":
+            raise L.LauncherBusy()
+        return state
 
     def release(self, document_id, reason):
         self.calls.append(("release", document_id, reason))
@@ -520,7 +559,7 @@ class StateMachine(unittest.TestCase):
         launcher = self.launcher({"states": ["pending", "pending", "exchanged"]})
         self.assertTrue(self.open(launcher))
         self.assertEqual(self.reports, [(L.OPENING, True), (L.OPEN, False)])
-        self.assertEqual(self.threads, ["SidecarLauncher"])
+        self.assertEqual(self.threads, ["SidecarLauncher", "SidecarLaunchCleanup"])
         launch = [c for c in self.client.calls if c[0] == "launch"][0]
         self.assertEqual(launch[1:], (DOCUMENT, "dark", "app", {"x": 1100, "y": 80, "width": 400, "height": 700}))
         argv = self.adapter.spawned[0]
@@ -696,6 +735,380 @@ class StateMachine(unittest.TestCase):
         launcher._opened.add("x")
         self.adapter.terminate = lambda pid: (_ for _ in ()).throw(RuntimeError("boom"))
         launcher.on_terminate()
+
+
+class BusyAnswers(unittest.TestCase):
+    """The plugin's busy refusal (every request slot in use) gets its own panel text. A 503
+    without a code means busy only from a port that already proved to be a 0.5.0 plugin."""
+
+    def setUp(self):
+        self.plugin = FakePlugin()
+        self.addCleanup(self.plugin.close)
+
+    def hello_text(self, answer, current=False):
+        self.plugin.hello_override = (503, answer)
+        with self.assertRaises(L.LauncherError) as caught:
+            L.LauncherClient(self.plugin.port, lambda: TOKEN, current=current).hello()
+        return str(caught.exception)
+
+    def test_the_busy_code_at_hello(self):
+        self.assertEqual(L.BUSY, "Sidecar is busy, try again in a moment.")
+        self.assertEqual(self.hello_text({"ok": False, "code": "busy", "error": "x"}), L.BUSY)
+
+    def test_the_0_5_0_busy_sentence_without_a_code(self):
+        self.assertEqual(self.hello_text({"ok": False, "error": "the chat endpoint is busy; try again shortly"}),
+                         L.BUSY)
+
+    def test_a_503_without_a_code_is_busy_only_from_a_known_0_5_0_plugin(self):
+        answer = {"ok": False, "error": "the plugin could not answer"}
+        self.assertEqual(self.hello_text(answer, current=False), L.OLD_PLUGIN)
+        self.assertEqual(self.hello_text(answer, current=True), L.BUSY)
+        self.assertEqual(self.hello_text({"ok": False, "code": "no_pairing", "error": "x"}, current=True),
+                         L.NO_PAIRING)
+
+    def test_the_launcher_remembers_a_port_that_answered_as_0_5_0(self):
+        launcher = L.Launcher(adapter=FakeAdapter(Path(".")), platform="darwin", port=lambda: self.plugin.port,
+                              start=lambda fn, name: fn())
+        launcher.configure(lambda: TOKEN)
+        reports = []
+        launcher.probe(lambda text, busy: reports.append(text))
+        self.plugin.hello_override = (503, {"ok": False, "error": "the plugin could not answer"})
+        launcher.probe(lambda text, busy: reports.append(text))
+        fresh = L.Launcher(adapter=FakeAdapter(Path(".")), platform="darwin", port=lambda: self.plugin.port,
+                           start=lambda fn, name: fn())
+        fresh.configure(lambda: TOKEN)
+        fresh.probe(lambda text, busy: reports.append(text))
+        self.assertEqual(reports, [L.IDLE, L.BUSY, L.OLD_PLUGIN])
+
+    def test_a_busy_refusal_on_the_channel_does_not_use_up_the_counter(self):
+        client = L.LauncherClient(self.plugin.port, lambda: TOKEN)
+        client.hello()
+        self.plugin.busy_paths.append("/launcher/launch")
+        with self.assertRaises(L.LauncherBusy) as caught:
+            client.launch(DOCUMENT, None, "tab", None)
+        self.assertEqual(str(caught.exception), L.BUSY)
+        answer = client.launch(DOCUMENT, None, "tab", None)  # same channel, same counter
+        self.assertFalse(answer["window_live"])
+        counters = [r["headers"].get("X-Sidecar-Counter") for r in self.plugin.requests]
+        self.assertEqual(counters, [None, "1", "1"])
+
+    def test_a_busy_status_poll_keeps_waiting(self):
+        cache = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(cache, ignore_errors=True))
+        clock = Clock()
+        client = FakeClient({"states": ["busy", "busy", "exchanged"]})
+        launcher = L.Launcher(adapter=FakeAdapter(cache), platform="darwin", port=lambda: 8661,
+                              client=client.factory(), sleep=clock.sleep, clock=clock,
+                              start=lambda fn, name: None if name == "SidecarLaunchCleanup" else fn())
+        launcher.configure(lambda: TOKEN)
+        reports = []
+        launcher.open(dict(DOCUMENT), None, (0, 0, 800, 600), (0, 0, 2560, 1080),
+                      lambda text, busy: reports.append(text))
+        self.assertEqual(reports, [L.OPENING, L.OPEN])
+
+
+class Trickler:
+    """A program on the chat port that answers one byte at a time, each byte well inside any
+    per-recv timeout, so only a whole-call deadline can end the call."""
+
+    def __init__(self, delay: float = 0.05, headers_fast: bool = False) -> None:
+        body = b'{"ok": true, "v": 1}' + b" " * 400
+        head = (f"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\n"
+                "Connection: close\r\n\r\n").encode()
+        self.answer, self.head, self.delay, self.headers_fast = head + body, head, delay, headers_fast
+        self.listener = socket.socket()
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(8)
+        self.port = self.listener.getsockname()[1]
+        self.stopped = threading.Event()
+        threading.Thread(target=self.serve, daemon=True).start()
+
+    def serve(self):
+        while not self.stopped.is_set():
+            try:
+                conn, _ = self.listener.accept()
+            except OSError:
+                return
+            threading.Thread(target=self.drip, args=(conn,), daemon=True).start()
+
+    def drip(self, conn):
+        with conn:
+            try:
+                conn.recv(65536)
+                data = self.answer
+                if self.headers_fast:
+                    conn.sendall(self.head)
+                    data = self.answer[len(self.head):]
+                for i in range(len(data)):
+                    if self.stopped.is_set():
+                        return
+                    conn.sendall(data[i:i + 1])
+                    time.sleep(self.delay)
+            except OSError:
+                return
+
+    def close(self):
+        self.stopped.set()
+        self.listener.close()
+
+
+class WholeCallDeadline(unittest.TestCase):
+    """critic2 B4: a socket timeout bounds one recv, not a call. Every launcher call, and quit as
+    a whole, must end on time against an answer trickled faster than any per-recv timeout."""
+
+    def trickler(self, **kwargs):
+        trickler = Trickler(**kwargs)
+        self.addCleanup(trickler.close)
+        return trickler
+
+    def timed(self, fn):
+        started = time.monotonic()
+        try:
+            fn()
+            error = None
+        except L.LauncherError as exc:
+            error = str(exc)
+        return time.monotonic() - started, error
+
+    def test_a_trickled_status_line_and_headers_end_the_hello_on_time(self):
+        trickler = self.trickler()
+        elapsed, error = self.timed(lambda: L.LauncherClient(trickler.port, lambda: TOKEN, timeout=0.5).hello())
+        self.assertLess(elapsed, 1.5)
+        self.assertEqual(error, L.NO_ANSWER.format(port=trickler.port))
+
+    def test_a_trickled_body_ends_the_hello_on_time(self):
+        trickler = self.trickler(headers_fast=True)
+        elapsed, error = self.timed(lambda: L.LauncherClient(trickler.port, lambda: TOKEN, timeout=0.5).hello())
+        self.assertLess(elapsed, 1.5)
+        self.assertEqual(error, L.NO_ANSWER.format(port=trickler.port))
+
+    def test_a_shared_deadline_bounds_every_call_on_the_client(self):
+        trickler = self.trickler()
+        client = L.LauncherClient(trickler.port, lambda: TOKEN, timeout=30, deadline=time.monotonic() + 0.4)
+        elapsed, error = self.timed(client.hello)
+        self.assertLess(elapsed, 1.4)
+        self.assertEqual(error, L.NO_ANSWER.format(port=trickler.port))
+        elapsed, error = self.timed(client.hello)  # past the deadline: nothing is even sent
+        self.assertLess(elapsed, 0.2)
+        self.assertEqual(error, L.NO_ANSWER.format(port=trickler.port))
+
+    def test_a_trickled_status_answer_ends_on_time(self):
+        plugin = FakePlugin()
+        self.addCleanup(plugin.close)
+        client = L.LauncherClient(plugin.port, lambda: TOKEN, timeout=0.5)
+        client.hello()
+        launch_id = client.launch(DOCUMENT, None, "tab", None)["launch_id"]
+        plugin.trickle["/launcher/launch/"] = 0.05
+        elapsed, error = self.timed(lambda: client.status(launch_id))
+        self.assertLess(elapsed, 1.5)
+        self.assertEqual(error, L.NO_ANSWER.format(port=plugin.port))
+
+    def quit_launcher(self, port):
+        cache = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(cache, ignore_errors=True))
+        launcher = L.Launcher(adapter=FakeAdapter(cache), platform="darwin", port=lambda: port,
+                              start=lambda fn, name: fn())
+        launcher.configure(lambda: TOKEN)
+        launcher._ever_opened = True  # a window was opened earlier, so quit sends host_quit
+        return launcher
+
+    def test_quit_ends_on_time_against_a_trickled_hello(self):
+        trickler = self.trickler()
+        launcher = self.quit_launcher(trickler.port)
+        elapsed, _ = self.timed(launcher.on_terminate)
+        self.assertLess(elapsed, L.QUIT_TIMEOUT_SECONDS + 1.0)
+
+    def test_quit_hello_and_release_share_one_deadline(self):
+        plugin = FakePlugin()
+        self.addCleanup(plugin.close)
+        plugin.trickle["/launcher/release"] = 0.05
+        launcher = self.quit_launcher(plugin.port)
+        elapsed, _ = self.timed(launcher.on_terminate)
+        self.assertLess(elapsed, L.QUIT_TIMEOUT_SECONDS + 1.0)
+        self.assertEqual([r["path"] for r in plugin.requests], ["/launcher/hello", "/launcher/release"])
+        self.assertLessEqual(L.QUIT_TIMEOUT_SECONDS, L.QUIT_BUDGET_SECONDS)
+
+    def test_the_bootstrap_cleanup_is_scheduled_when_the_file_is_written(self):
+        """Deleted 30 s after creation even while a status call hangs (not only after _follow)."""
+        cache = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(cache, ignore_errors=True))
+        adapter = FakeAdapter(cache)
+        scheduled = []
+        seen_at_spawn = []
+        spawn = adapter.spawn
+        adapter.spawn = lambda argv: (seen_at_spawn.append(list(scheduled)), spawn(argv))[1]
+        clock = Clock()
+        client = FakeClient({})
+        launcher = L.Launcher(adapter=adapter, platform="darwin", port=lambda: 8661, client=client.factory(),
+                              sleep=clock.sleep, clock=clock,
+                              start=lambda fn, name: scheduled.append(name) if name == "SidecarLaunchCleanup" else fn())
+        launcher.configure(lambda: TOKEN)
+        launcher.open(dict(DOCUMENT), None, (0, 0, 800, 600), (0, 0, 2560, 1080), lambda *a: None)
+        self.assertEqual(seen_at_spawn, [["SidecarLaunchCleanup"]])
+
+
+class Gate:
+    """A barrier a fake step waits at until the test opens it."""
+
+    def __init__(self) -> None:
+        self.arrived = threading.Event()
+        self.opened = threading.Event()
+
+    def wait(self) -> None:
+        self.arrived.set()
+        if not self.opened.wait(10):
+            raise RuntimeError("gate never opened")
+
+
+class GatedClient(FakeClient):
+    """The launch worker's client stops at the gated step; later clients (release on close,
+    host_quit) are ungated and log into the same list."""
+
+    def __init__(self, gates: dict[str, Gate], log: list, script: dict) -> None:
+        super().__init__(script)
+        self.gates = gates
+        self.calls = log
+
+    def hello(self):
+        result = super().hello()
+        if "hello" in self.gates:
+            self.gates.pop("hello").wait()
+        return result
+
+    def launch(self, *args):
+        if "launch" in self.gates:  # the plugin is minting the code when the document closes
+            self.gates.pop("launch").wait()
+        return super().launch(*args)
+
+    def status(self, launch_id):
+        if "status" in self.gates:
+            self.gates.pop("status").wait()
+        return super().status(launch_id)
+
+
+class CancelInFlight(unittest.TestCase):
+    """critic2 B1: closing the document or quitting LibreOffice while a launch is in flight. The
+    worker is held at each step in turn: before hello returns, while the plugin mints, after the
+    mint, while the browser starts, and while the outcome is polled; then the document closes or
+    LibreOffice quits; then the step finishes. App and tab adapters."""
+
+    STEPS = ("hello", "launch", "after_mint", "spawn", "status")
+
+    def run_case(self, step: str, event: str, mode: str):
+        cache = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(cache, ignore_errors=True))
+        adapter = FakeAdapter(cache, browsers=((("Google Chrome", "/Apps/Chrome"),) if mode == "app" else ()))
+        gate = Gate()
+        log: list = []
+        gates = {step: gate} if step in ("hello", "launch", "status") else {}
+        made: list = []
+
+        def factory(port, read_token, timeout=L.CALL_TIMEOUT_SECONDS, **_keywords):
+            client = GatedClient(gates if not made else {}, log, {"states": ["pending", "exchanged"]})
+            log.append(("new", port, timeout))
+            made.append(client)
+            return client
+
+        if step == "after_mint":  # the worker first asks for cache_dir right after the 201
+            cache_dir = adapter.cache_dir
+
+            def gated_cache_dir():
+                if threading.current_thread().name == "SidecarLauncher" and not gate.opened.is_set():
+                    gate.wait()
+                return cache_dir()
+            adapter.cache_dir = gated_cache_dir
+        if step == "spawn":
+            original = adapter.spawn if mode == "app" else adapter.open_default
+            hold = lambda *a: (gate.wait(), original(*a))[1]
+            if mode == "app":
+                adapter.spawn = hold
+            else:
+                adapter.open_default = hold
+        workers: list[threading.Thread] = []
+
+        def start(fn, name):
+            if name == "SidecarLaunchCleanup":
+                return  # the 30 s timer is not under test here
+            thread = threading.Thread(target=fn, name=name, daemon=True)
+            workers.append(thread)
+            thread.start()
+
+        clock = Clock()
+        launcher = L.Launcher(adapter=adapter, platform="darwin", port=lambda: 8661, client=factory,
+                              sleep=clock.sleep, clock=clock, start=start)
+        launcher.configure(lambda: TOKEN)
+        reports: list = []
+        self.assertTrue(launcher.open(dict(DOCUMENT), "light", (0, 0, 800, 600), (0, 0, 2560, 1080),
+                                      lambda text, busy: reports.append(text)))
+        self.assertTrue(gate.arrived.wait(5), f"{step}: the worker never reached the step")
+        if event == "close":
+            launcher.on_document_closed(DOCUMENT["document_id"])
+        else:
+            if step == "spawn":  # quit waits (bounded) for a browser being started
+                threading.Timer(0.2, gate.opened.set).start()
+            started = time.monotonic()
+            launcher.on_terminate()
+            self.assertLess(time.monotonic() - started, L.QUIT_BUDGET_SECONDS + 0.5)
+        gate.opened.set()
+        for thread in list(workers):
+            thread.join(5)
+            self.assertFalse(thread.is_alive())
+        return launcher, adapter, log, reports, cache
+
+    def check(self, step, event, mode):
+        launcher, adapter, log, reports, cache = self.run_case(step, event, mode)
+        label = f"{step}/{event}/{mode}"
+        self.assertNotIn(L.OPEN, reports, label)
+        self.assertEqual(reports, [L.OPENING], label)  # nothing stale reported after the cancel
+        started = adapter.spawned + adapter.opened
+        if step in ("hello", "launch", "after_mint"):
+            self.assertEqual(started, [], f"{label}: a browser started after the cancel")
+        launched = [c for c in log if c[0] == "launch"]
+        released = [c for c in log if c[0] == "release"]
+        if step == "hello":
+            self.assertEqual(launched, [], f"{label}: a code was minted for a closed document")
+        expected = ("release", None, "host_quit") if event == "quit" else ("release", DOCUMENT["document_id"],
+                                                                         "document_closed")
+        if launched:  # a minted code is released, after the launch call, whatever the step
+            self.assertIn(expected, released, label)
+            last = max(i for i, call in enumerate(log) if call == expected)
+            self.assertGreater(last, log.index(launched[0]), label)
+        if step == "spawn" and mode == "app":  # started while the cancel happened: quit again
+            self.assertTrue(adapter.alive <= set(adapter.terminated) or not adapter.alive,
+                            f"{label}: the browser started for a cancelled launch is still running")
+        folder = cache / "Sidecar for LibreOffice" / "launch"
+        self.assertEqual(sorted(folder.iterdir()) if folder.exists() else [], [], f"{label}: bootstrap left")
+        self.assertEqual(getattr(launcher, "_launches", {}), {}, label)
+        self.assertEqual(launcher._opened, set(), label)
+
+    def test_close_at_every_step_app_mode(self):
+        for step in self.STEPS:
+            with self.subTest(step=step):
+                self.check(step, "close", "app")
+
+    def test_close_at_every_step_tab_mode(self):
+        for step in self.STEPS:
+            with self.subTest(step=step):
+                self.check(step, "close", "tab")
+
+    def test_quit_at_every_step_app_mode(self):
+        for step in self.STEPS:
+            with self.subTest(step=step):
+                self.check(step, "quit", "app")
+
+    def test_quit_at_every_step_tab_mode(self):
+        for step in self.STEPS:
+            with self.subTest(step=step):
+                self.check(step, "quit", "tab")
+
+    def test_after_a_cancelled_launch_the_document_can_open_again(self):
+        launcher, adapter, log, reports, cache = self.run_case("launch", "close", "app")
+        reports.clear()
+        done = threading.Event()
+        launcher._start = lambda fn, name: None if name == "SidecarLaunchCleanup" else (fn(), done.set())
+        self.assertTrue(launcher.open(dict(DOCUMENT), None, (0, 0, 800, 600), (0, 0, 2560, 1080),
+                                      lambda text, busy: reports.append(text)))
+        self.assertEqual(reports, [L.OPENING, L.OPEN])
 
 
 class SpawnOnlyFromTheButton(unittest.TestCase):
