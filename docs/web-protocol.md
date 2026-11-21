@@ -23,7 +23,13 @@ that has not been used yet, and only a verified call displaces a used one (3.1);
 endpoint carries the code `endpoint_busy` (9.1, 12); a turn's `seq` grows only when what the page
 is shown changes (6.4); successful state polls and static files log at DEBUG (11); on Windows
 the listener binds its port exclusively (1); methods outside the table are described as the code
-answers them (10). Revision 2 callers keep working: a body without `send_id` is accepted.
+answers them (10). On the launcher side: every launcher request has one deadline for the whole
+call, and quitting has one budget (3.2); closing a document or quitting cancels its launch in
+flight (4.3); a bootstrap file's 30 s removal timer starts when it is written (4.2); the busy
+refusal, the plugin's coded hello refusals and an unsigned refusal of the first call get their
+own panel texts (8.2); `terminate` takes a `wait` (13.2); and on Windows the extension's
+listener binds its port exclusively too (1). Revision 2 callers keep working: a body without
+`send_id` is accepted.
 Labels such as R18, D1 or S1 are the requirement, owner-decision and spike numbers of the 0.5.0
 design review; the spike results that fixed a detail are quoted where they apply.
 
@@ -36,7 +42,14 @@ top-left of the main display, y downwards, in points (not device pixels).
 - The plugin listens on `127.0.0.1:<chat_port>` only (0 means off: no listener at all). On
   Windows the port is bound with `SO_EXCLUSIVEADDRUSE` and without `SO_REUSEADDR`, so no other
   socket, of any user account, can bind it while the listener is up; elsewhere `SO_REUSEADDR`
-  stays (it allows a restart over `TIME_WAIT` connections; a second bind still fails).
+  stays (it allows a restart over `TIME_WAIT` connections; a second bind still fails). The
+  extension's listener (8660, `hermes_bridge.BoundedHTTPServer`) binds the same way (revision 3).
+  Checked on Windows 11 for the extension's listener: with `SO_REUSEADDR` (earlier 0.5.0 builds),
+  a socket of another account (`LOCAL SERVICE`) could bind its port while it listened; with
+  `SO_EXCLUSIVEADDRUSE` that bind is refused (WSAEACCES). The listener ran in an administrator
+  session there, not with LibreOffice's limited token, and whether a second bind would have
+  received connections was not tested. The plugin's listener was checked against a second
+  socket of the same account only.
 - `ORIGIN` is `http://127.0.0.1:<chat_port>`. `HOST` is `127.0.0.1:<chat_port>`.
 - Every response closes its connection (`Connection: close`). No route sets or reads a cookie;
   no response ever carries `Set-Cookie`.
@@ -161,7 +174,10 @@ moves it to the used pool; when that pool already holds 16, the least recently c
 channel is dropped. So hellos from a program without the token can end only a channel whose
 launcher has not made its first call yet, never one it is working with; a used channel ends by
 its own failure, its expiry, its 64-call limit, or 16 newer launchers' first calls. A server
-nonce opens exactly one channel and is never reissued.
+nonce opens exactly one channel and is never reissued. Hellos can still displace a channel in
+the moment between its hello and its first call; that call then gets the unsigned 401
+`launcher_auth`, which the launcher shows as *did not answer, try again* (8.2), not as *not your
+Hermes*: the hello had already proved the plugin.
 
 ### 3.2 Calls on a channel
 
@@ -188,7 +204,14 @@ X-Sidecar-MAC: b64u(HMAC(channel_key, "sidecar-launcher/1 response" \n n \n STAT
 ```
 
 and the launcher refuses an answer whose MAC is missing or wrong (treated as *not your Hermes*).
-401 answers to refused calls carry no MAC.
+401 answers to refused calls carry no MAC. Two unsigned answers are told apart, and only to
+choose a panel text (8.2): the busy refusal of section 12, and a 401 `launcher_auth` to the
+first call after the hello. Neither authorises anything.
+
+**Deadlines (revision 3).** Every launcher request is bounded by one deadline for the whole call
+(connect, send, status line, headers, body): 5 s per call, and a status poll never runs past
+the 20 s outcome limit. At quit the launcher's hello and `host_quit` share one 2 s deadline, and
+everything it does at quit (including waiting for the browser) is bounded by 4 s.
 
 ### 3.3 Test vectors
 
@@ -258,14 +281,24 @@ for an unknown id. Any request target `/launcher/launch/<anything>` without a qu
 route, so a malformed id (wrong length, other characters, an extra `/`) is answered after the
 channel MAC like an unknown id: a **signed** 404 `not_found`. A query string makes it an unknown
 path (unsigned 404, before the channel is checked). Records are kept 120 s from minting. The launcher polls every 500 ms on a
-worker thread for up to 20 s (R11) and deletes the bootstrap file at the first state other than
-`pending`, or after 30 s, whichever comes first.
+worker thread for up to 20 s (R11). Each bootstrap file is deleted at the first state other
+than `pending`, or 30 s after it was written by a timer started when it was written, whichever
+comes first; at quit every bootstrap file this LibreOffice wrote is deleted, and at start and
+quit any `launch-*.html` older than 60 s (revision 3).
 
 ### 4.3 `POST /launcher/release`
 
 Body `{"document_id": "<id>", "reason": "document_closed"}` or
 `{"document_id": null, "reason": "host_quit"}` (all documents). Ends every matching session with
 reason `host_gone`, asks their driven runs to stop, answers 200 `{"ok": true, "released": <n>}`.
+
+**Cancel on close and quit (revision 3).** Closing a document, or quitting LibreOffice, cancels
+that document's launch in flight: no browser is started after it; a code the plugin already
+minted is released (`document_closed`, or `host_quit` at quit) on the launch's own channel
+after its launch call, which revokes it; its bootstrap file is deleted; nothing is reported. If
+the browser was already being started, quit waits for it (bounded) and asks it to quit, and a
+close quits it when no other document has a window. `host_quit` is sent when a window was
+opened or a launch is in flight.
 
 ## 5. Bootstrap-file launch (R2, D1): the code is never on a command line
 
@@ -293,8 +326,10 @@ The same mechanism serves the app window and the D1 fallback tab, on every platf
 4. **Tab mode** (D1 fallback, no Chromium browser): macOS runs `/usr/bin/open <bootstrap path>`
    (argument list, no shell); Windows calls `os.startfile(<bootstrap path>)`. The default handler
    for `.html` files opens it; if that is not a browser, the launch shows *did not connect*.
-5. **Removal**: as in 4.2. On LibreOffice start and quit the launcher also deletes any
-   `launch-*.html` in that folder older than 60 s.
+5. **Removal**: as in 4.2: at the first state other than `pending`, or 30 s after the file was
+   written (a timer started when it is written), whichever comes first; at quit every bootstrap
+   file this LibreOffice wrote; at LibreOffice start and quit any `launch-*.html` in that folder
+   older than 60 s.
 6. **Windows**: this section replaces R2(b) (the URL on Edge's command line). In 0.5.0 Windows has
    no app mode at all (owner decision D3 after S3): it always uses tab mode (4).
 
@@ -607,7 +642,11 @@ supported there.
 | still `pending` after 20 s, or `expired` | "The Sidecar window did not connect. Your browser may be managed by your organization; see README ▸ Which browser." |
 | `double_use` | "Another program used this launch. Click Open Sidecar again." |
 | `window_live`, raise failed or tab mode | "Sidecar is already open. Switch to it from the Dock or taskbar." |
-| hello answered 401 or 404 without an error `code` (a 0.4.0 plugin: it checks its bearer token before the path and has no codes) | "Your Hermes plugin is older than this extension. Update atlas-sidecar-libreoffice in Hermes, then click Open Sidecar again." |
+| hello answered 401 or 404 without an error `code` (a 0.4.0 plugin: it checks its bearer token before the path and has no codes), or 503 without any `code` from a port not yet known as 0.5.0 | "Your Hermes plugin is older than this extension. Update atlas-sidecar-libreoffice in Hermes, then click Open Sidecar again." |
+| the plugin's busy refusal (section 12: 503 `endpoint_busy`, or the sentence *the chat endpoint is busy; try again shortly*, or a 503 without a `code` from a port that already answered as a 0.5.0 plugin), on hello or on any call (revision 3) | "Sidecar is busy, try again in a moment." A busy refusal on a channel call does not use up the counter; a status poll that gets it keeps waiting |
+| hello answered 503 `turned_off` (the plugin is unloading) (revision 3) | "The LibreOffice plugin was turned off in Hermes." |
+| hello answered 500 `internal` (revision 3) | "The chat endpoint failed. Click Open Sidecar to try again." |
+| the first call after a hello answered 401 `launcher_auth` without a MAC (the channel was displaced or expired, 3.1) (revision 3) | the *no answer* text below |
 | idle panel | "Open Sidecar to chat with Hermes about this document." |
 | before hello | "Checking Hermes…" |
 | no answer, or a broken connection | "Hermes did not answer on port <n>. Click Open Sidecar to try again." |
@@ -619,7 +658,9 @@ supported there.
 
 The older-plugin row is a plain version mismatch, not an impostor: nothing is sent after the
 hello and no window opens. A wrong proof from a program that does answer 200 is still the *not
-your Hermes* row.
+your Hermes* row. The hello answer is not signed, so for the coded refusals above the launcher
+shows its own fixed texts (the plugin's sentences for those codes), never the answer's words;
+any other coded refusal of the hello is the *not your Hermes* row.
 
 No automatic second attempt in another browser. A browser is spawned only from the panel's
 **Open Sidecar** button, after `/launcher/launch` answered 201 (and, for tests, from the
@@ -730,7 +771,8 @@ parallel static or poll requests stay below `MAX_HANDLERS` (16). The listen back
 connection accepted while all 16 handler slots are taken gets the prepared answer 503
 `{"ok": false, "error": "the chat endpoint is busy; try again shortly", "code": "endpoint_busy"}`
 (unsigned, on every route, before the request is read): nothing was processed, the caller may
-try again. The launcher shows it as busy (*Hermes did not answer…*), not as an older plugin.
+try again. The launcher shows it as busy (*Sidecar is busy, try again in a moment.*, 8.2), not as
+an older plugin.
 
 ## 13. Interfaces between lanes (Python)
 
@@ -779,7 +821,7 @@ expose the same functions:
 | `spawn(argv: list[str]) -> int` | macOS: starts the browser without a shell, cleaned environment, detached (`start_new_session`); returns the PID. Windows 0.5.0: never called (raises) |
 | `open_default(path: pathlib.Path) -> None` | D1 tab mode (5.4): macOS runs `/usr/bin/open <path>` (argument list, no shell, cleaned environment); Windows calls `os.startfile(<path>)`, which opens it with the default handler for `.html` files |
 | `raise_pid(pid: int) -> bool` | macOS: runs `/usr/bin/osascript -l JavaScript -e <fixed script> <pid>` (argument list, no shell, cleaned environment, 5 s timeout); the fixed JXA script calls `NSRunningApplication.runningApplicationWithProcessIdentifier(pid).activateWithOptions(1)`, so no native code is loaded into LibreOffice (R6). Off under `HERMES_LO_SIDECAR_NO_NATIVE=1`. Windows 0.5.0: always False (tab mode cannot be raised). False when it could not |
-| `terminate(pid: int) -> None` | macOS: SIGTERM to the browser this instance spawned (Chromium shuts down normally), waiting at most 3 s. Windows 0.5.0: nothing (the page closes itself on `host_gone`) |
+| `terminate(pid: int, wait: float = 3.0) -> None` | macOS: SIGTERM to the browser this instance spawned (Chromium shuts down normally), waiting at most `min(wait, 3)` s; quit passes what is left of its 4 s budget (revision 3). Windows 0.5.0: nothing, `wait` is ignored (the page closes itself on `host_gone`) |
 
 So the programs the extension starts are: the browser in app mode (macOS), `/usr/bin/osascript`
 (raise, macOS), `/usr/bin/open` (tab mode, macOS), and on Windows whatever program the `.html`
@@ -807,6 +849,14 @@ Observed after the spikes (0.5.0 lanes and integration):
   `os.startfile`; the page exchanged its code (`Sec-Fetch-Site: same-origin`), no command line
   carried the code or the bootstrap path, the second open answered `window_live`, and after
   `host_quit` the page closed its own tab with `window.close()`.
+- **Windows 11, LibreOffice 26.8.3.1, tab mode with Firefox 160** (fix round 1, an earlier build
+  of the 0.5.0 `.oxt` installed into a disposable profile, the real plugin with a fake Runs API):
+  a click posted to the panel's **Open Sidecar** button (window messages, not the development
+  hook) opened one Firefox tab, which connected; no
+  command-line sample carried the code or the bootstrap path; one formatted reply and **Stop**
+  worked; closing a document while the plugin held its launch released and revoked the code and
+  opened no tab; quitting LibreOffice sent `host_quit`, soffice exited 0 and the tab closed
+  itself. The launch folder's DACL granted only SYSTEM, Administrators and OWNER RIGHTS.
 
 S3 findings kept for the Windows app window in 0.5.1 (not used in 0.5.0):
 
