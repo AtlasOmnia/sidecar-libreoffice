@@ -520,6 +520,15 @@ class StopStartRaceTests(unittest.TestCase):
             self.assertLessEqual(elapsed, 0.3 + chat_bridge.STOP_JOIN_SECONDS + SLACK, "close() kept its budget")
         self.assertEqual(self.close(0.3, on_loop)[0], 1, "a second close() agrees")
         self.finish(fail)
+        # The cut-off shuts sockets down; it does not join close()'s background
+        # worker. In particular, on an event loop that worker may still be in a
+        # GET's finally block after the timer fires. Wait for its own completion
+        # notification before checking registrations, so a leaked handle still
+        # fails assert_clean rather than being mistaken for unfinished work.
+        with self.bridge._lock:
+            self.assertTrue(self.bridge._lock.wait_for(
+                lambda: self.bridge._close_workers == 0, timeout=5),
+                "close's worker ended after the cut-off")
         self.assert_clean(owned=1, allow_close_stop=True)
 
     def test_close_while_the_start_is_held_for_an_unresolved_run_then_the_start_succeeds(self):
