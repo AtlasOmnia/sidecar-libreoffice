@@ -148,6 +148,8 @@ class Session:
         self.turn: Optional[Turn] = None
         self.ended: Optional[str] = None
         self.inflight = 0
+        self.starting: Optional[Turn] = None   # the turn an /api/chat is admitting (revision 4, 6.3)
+        self.sent_ids: list[str] = []          # send_ids of the turns it started (the last 64)
 
     @property
     def chat_label(self) -> str:
@@ -707,7 +709,7 @@ class Stub:
             self._json(req, 202 if view["state"] != "done" else 200, {"ok": True, "turn": view}, start)
             return True
         if name == "/api/new-chat":
-            if self.bridge.session_state(session.chat_id) == "driven":
+            if session.starting is not None or self.bridge.session_state(session.chat_id) == "driven":
                 raise WebError(409, "turn_running", "Wait for the reply, or press Stop first.")
             with self.cv:
                 session.chat_id = "lo-" + secrets.token_hex(16)
@@ -772,20 +774,34 @@ class Stub:
             send_id = None
         elif not isinstance(send_id, str) or not contract.ID22_RE.fullmatch(send_id):
             raise WebError(400, "bad_request", "send_id must be 22 base64url characters")
-        with self.cv:
-            current = session.turn
-            if send_id is not None and current is not None and current.send_id == send_id:
-                if current.message != message.strip():
-                    raise WebError(400, "bad_request", "a send_id names one message")
-                view = current.view()
-                replay = True
-            else:
-                replay = False
-        if replay:
-            self._json(req, 200, {"ok": True, "turn": view, "replayed": True}, start)
-            return True
         turn = Turn(session)
         turn.send_id, turn.message = send_id, message.strip()
+        with self.cv:   # revision 4 (6.3): one admission per Send; a retry waits for it
+            current, pending, replay = session.turn, session.starting, None
+            if send_id is not None and current is not None and current.send_id == send_id:
+                replay = current
+            elif send_id is not None and pending is not None and pending.send_id == send_id:
+                deadline = time.monotonic() + 25.0
+                while session.starting is pending and time.monotonic() < deadline:
+                    self.cv.wait(deadline - time.monotonic())
+                if session.starting is pending:
+                    raise WebError(409, "busy", "this chat is still waiting for a reply")
+                if pending.run is None:
+                    raise WebError(409, "busy", "this chat is still waiting for a reply")
+                replay = pending
+            elif send_id is not None and send_id in session.sent_ids:
+                raise WebError(409, "already_sent", "This message was already sent to Hermes; it is not sent again.")
+            elif pending is not None:
+                raise WebError(409, "busy", "this chat is still waiting for a reply")
+            if replay is not None and replay.message != message.strip():
+                raise WebError(400, "bad_request", "a send_id names one message")
+            if replay is not None:
+                view = replay.view()
+            else:
+                session.starting = turn
+        if replay is not None:
+            self._json(req, 200, {"ok": True, "turn": view, "replayed": True}, start)
+            return True
 
         def on_done(_run: Any, outcome: Any) -> None:
             with self.cv:
@@ -799,6 +815,9 @@ class Stub:
         try:
             run = self.bridge.begin_turn(session.chat_id, content, on_done)
         except self.cb.ChatError as exc:
+            with self.cv:
+                session.starting = None
+                self.cv.notify_all()
             text = str(exc)
             if exc.status == 409:
                 code = "busy" if "still waiting" in text else "unresolved"
@@ -809,10 +828,19 @@ class Stub:
             else:
                 code = "plugin_inactive"
             raise WebError(exc.status, code, text) from None
-        with self.cv:
+        except BaseException:
+            with self.cv:
+                session.starting = None
+                self.cv.notify_all()
+            raise
+        with self.cv:   # published and released in one step (6.3)
             turn.run = run
+            session.starting = None
             if session.ended is None:
                 session.turn = turn
+                if send_id is not None:
+                    session.sent_ids = (session.sent_ids + [send_id])[-64:]
+            self.cv.notify_all()
             view = turn.view()
         if session.ended is not None:
             self._stop_run(run)

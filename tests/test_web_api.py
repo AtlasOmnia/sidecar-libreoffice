@@ -200,6 +200,38 @@ class LaunchLifecycleTests(WebCase):
         self.assertEqual(status, 404, "the launcher's channel survived the flood")
         self.assertIsNotNone(answer_mac)
 
+    def test_a_non_ascii_launcher_path_is_an_unsigned_404_and_leaves_the_channel_alone(self):
+        # critic N6 / critic2 N4: the MAC covers the path as ASCII; such a path used to reach the
+        # MAC computation and answer 500 with an error log line.
+        import socket
+        launcher = LauncherClient(self.port)
+        launcher.hello()
+        head = ("GET /launcher/launch/caf\xe9 HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nX-Sidecar-Channel: %s\r\n"
+                "X-Sidecar-Counter: 1\r\nX-Sidecar-MAC: %s\r\nConnection: close\r\n\r\n"
+                % (self.port, launcher.channel, "A" * 43)).encode("latin-1")
+        errors = []
+        handler = logging.Handler(logging.ERROR)
+        handler.emit = errors.append
+        logging.getLogger("plugin").addHandler(handler)
+        self.addCleanup(logging.getLogger("plugin").removeHandler, handler)
+        with socket.create_connection(("127.0.0.1", self.port), timeout=10) as conn:
+            conn.sendall(head)
+            raw = b""
+            while True:
+                chunk = conn.recv(65536)
+                if not chunk:
+                    break
+                raw += chunk
+        status_line, _sep, rest = raw.partition(b"\r\n")
+        headers, _sep, body = rest.partition(b"\r\n\r\n")
+        self.assertIn(b" 404 ", status_line + b" ")
+        self.assertEqual(json.loads(body)["code"], "not_found")
+        self.assertNotIn(b"x-sidecar-mac", headers.lower(), "refused before any MAC")
+        status, _value, answer_mac = launcher.call("GET", "/launcher/launch/" + "A" * 22)
+        self.assertEqual(status, 404, "the channel was not dropped and its counter did not move")
+        self.assertEqual(errors, [], "no error log line")
+        self.assertIsNotNone(answer_mac)
+
     def test_a_malformed_launch_id_gets_a_signed_404_like_an_unknown_one(self):
         launcher = LauncherClient(self.port)
         launcher.hello()

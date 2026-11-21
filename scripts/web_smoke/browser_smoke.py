@@ -654,6 +654,243 @@ def _(b: BCtx) -> None:
     _lost_send(b, 23, 3, "All answers lost [fail]", "Hermes could not finish this reply", "failed")
 
 
+class FetchControl:
+    """CDP Fetch on one page for several URL patterns at once. Each paused request or response is
+    passed to ``decide(stage, params)`` (stage ``request`` or ``response``), which answers
+    ``continue``, ``fail`` (the page sees a network error) or ``hold`` (kept until ``release``).
+    Answers are sent from threads of their own (the CDP reader must not wait for its replies)."""
+
+    def __init__(self, page: Page, patterns: list, decide: Callable[[str, dict], str]) -> None:
+        import threading
+        self.page, self.decide = page, decide
+        self.held: list[str] = []
+        self.lock = threading.Condition()
+        self._threading = threading
+        page.chrome.listeners.append(self._on_event)
+        page.send("Fetch.enable", {"patterns": patterns})
+
+    def _answer(self, method: str, request_id: str, extra: Optional[dict] = None) -> None:
+        def run() -> None:
+            try:
+                self.page.send(method, dict({"requestId": request_id}, **(extra or {})))
+            except Exception:  # noqa: BLE001 - the page may be gone; the scenario's checks report it
+                pass
+        self._threading.Thread(target=run, daemon=True).start()
+
+    def _on_event(self, msg: dict) -> None:
+        if msg.get("method") != "Fetch.requestPaused" or msg.get("sessionId") != self.page.session:
+            return
+        params = msg["params"]
+        stage = "response" if ("responseStatusCode" in params or "responseErrorReason" in params) else "request"
+        action = self.decide(stage, params)
+        if action == "hold":
+            with self.lock:
+                self.held.append(params["requestId"])
+                self.lock.notify_all()
+        elif action == "fail":
+            self._answer("Fetch.failRequest", params["requestId"], {"errorReason": "ConnectionReset"})
+        else:
+            self._answer("Fetch.continueRequest", params["requestId"])
+
+    def wait_held(self, count: int = 1, timeout: float = 10.0) -> bool:
+        with self.lock:
+            return self.lock.wait_for(lambda: len(self.held) >= count, timeout=timeout)
+
+    def release_all(self) -> None:
+        with self.lock:
+            held, self.held = self.held, []
+        for request_id in held:
+            self._answer("Fetch.continueRequest", request_id)
+
+    def close(self) -> None:
+        self.release_all()
+        if self._on_event in self.page.chrome.listeners:
+            self.page.chrome.listeners.remove(self._on_event)
+
+
+def _deliver_out_of_band(b: BCtx, params: dict, answers: list) -> None:
+    """Send the page's own paused ``/api/chat`` request to the endpoint from here, as a request
+    that reached it while the browser saw the connection fail."""
+    import threading
+    from httpraw import request as raw
+    headers = {k.lower(): v for k, v in params["request"].get("headers", {}).items()}
+    send = [("Origin", b.t.origin), ("Sec-Fetch-Site", "same-origin"),
+            ("Sec-Fetch-Mode", "cors"), ("Sec-Fetch-Dest", "empty"), ("Content-Type", "application/json"),
+            ("Accept", "application/json"), ("X-Sidecar-Session", headers.get("x-sidecar-session", ""))]
+    body = params["request"].get("postData", "").encode("utf-8")
+
+    def run() -> None:
+        try:
+            answers.append(raw(b.t.port, "POST", "/api/chat", send, body, timeout=60))
+        except Exception as exc:  # noqa: BLE001 - reported by the scenario's checks
+            answers.append(exc)
+    threading.Thread(target=run, daemon=True).start()
+
+
+NO_NON_DELIVERY = "did not reach Hermes"
+UNDECIDED_TEXT = "It is not known yet whether Hermes received this message"
+COMPOSER_STATE = ("({send: document.getElementById('send-button').disabled, input: document.getElementById('prompt-input')"
+                  ".disabled, newChat: document.getElementById('new-chat-button').disabled, retry: "
+                  "!document.getElementById('desk-connect').hidden && !document.getElementById('desk-connect-button').hidden})")
+
+
+def _undecided_send(b: BCtx, n: int, message: str, needle: str, label: str, *, try_again: bool = False,
+                    stop: bool = False) -> None:
+    """critic2 R2: the first request of a Send reaches the plugin but its admission is held; the
+    browser sees that request fail and its two retries fail before reaching the plugin. State
+    polls answer meanwhile without the turn. The page must not say the message did not arrive,
+    must not offer a fresh-id Send or New chat, and must show the result once when the admission
+    completes, from a state poll or (``try_again``) from Try again with the same send_id."""
+    page, _lid, _c = b.open_window(n)
+    created = _creations(b)
+    oob: list = []
+    seen = {"chat": 0}
+
+    def decide(stage: str, params: dict) -> str:
+        if "/api/chat" not in params["request"]["url"]:
+            return "continue"
+        seen["chat"] += 1
+        if seen["chat"] == 1:
+            _deliver_out_of_band(b, params, oob)
+            return "fail"
+        return "fail" if seen["chat"] <= 3 else "continue"
+    release = b.t.hold_admission()
+    control = FetchControl(page, [{"urlPattern": "*/api/chat", "requestStage": "Request"}], decide)
+    try:
+        b.send(page, message)
+        undecided = b.wait_text(page, UNDECIDED_TEXT, 10)
+        b.check(f"{label}: the page says delivery is not known yet", undecided, True,
+                page.eval("document.getElementById('messages').innerText.slice(-300)"))
+        time.sleep(7.0)   # two or more state polls (every 3 s) answer while the admission is held
+        body = page.eval("document.body.innerText")
+        b.check(f"{label}: no claim that the message did not reach Hermes", NO_NON_DELIVERY not in body, False,
+                body[-300:])
+        state = page.eval(COMPOSER_STATE)
+        b.check(f"{label}: no fresh Send and no New chat while undecided; Try again offered",
+                state == {"send": True, "input": True, "newChat": True, "retry": True}, "all true", state)
+        b.check(f"{label}: nothing was created while the admission was held", _creations(b) - created == 0, 0,
+                _creations(b) - created)
+        if try_again:
+            page.eval("document.getElementById('desk-connect-button').click()")
+            with control.lock:
+                control.lock.wait_for(lambda: seen["chat"] >= 4, timeout=5)
+            time.sleep(0.5)   # the Try again request is waiting in the plugin for the admission
+        release()
+        count = REPLY_COUNT % json.dumps(needle)
+        if stop:
+            working = page.wait_for("!document.getElementById('stop-button').disabled", 15)
+            b.check(f"{label}: the turn is followed and Stop is offered", bool(working), True, False)
+            page.eval("document.getElementById('stop-button').click()")
+        shown = page.wait_for(f"{count} >= 1", 20)
+        b.check(f"{label}: the result is shown once the admission completes", bool(shown), True,
+                page.eval("document.getElementById('messages').innerText.slice(-300)"))
+        time.sleep(7.0)
+        b.check(f"{label}: shown exactly once, also after later state polls", page.eval(count) == 1, 1, page.eval(count))
+        runs = _creations(b) - created
+        b.check(f"{label}: one run for one Send", runs == 1, 1, runs)
+        first = oob[0] if oob else None
+        b.check(f"{label}: the out-of-band first request was admitted (202)",
+                getattr(first, "status", None) == 202, 202, getattr(first, "status", first))
+        if try_again:
+            b.check(f"{label}: Try again sent the same request (4 requests in all)", seen["chat"] == 4, 4, seen["chat"])
+        body = page.eval("document.body.innerText")
+        b.check(f"{label}: never a non-delivery claim", NO_NON_DELIVERY not in body, False, body[-200:])
+        disabled = page.eval("document.getElementById('prompt-input').disabled")
+        b.check(f"{label}: the composer is usable again", disabled is False, False, disabled)
+        b.check(f"{label}: zero securitypolicyviolation events", b.csp(page) == [], [], b.csp(page))
+    finally:
+        release()
+        control.close()
+
+
+@scenario("g3.send_undecided", "G3", "A Send still being admitted after all its answers were lost: no 'did not reach', "
+          "one run, the result shown once (completed, failed, not known)", needs=("fake", "admission"))
+def _(b: BCtx) -> None:
+    _undecided_send(b, 24, "Held admission [md]", "Sales by region", "completed")
+    _undecided_send(b, 25, "Held admission [fail]", "Hermes could not finish this reply", "failed")
+    _undecided_send(b, 26, "Held admission [unknown]", "It is not known whether Hermes carried out", "not known")
+
+
+@scenario("g3.send_try_again", "G3", "Try again on an undecided Send re-sends the same send_id, which waits for the "
+          "held admission: one run, then Stop", needs=("fake", "admission"))
+def _(b: BCtx) -> None:
+    _undecided_send(b, 27, "Held then stopped [hang]", "Stopped. Check the document", "stopped",
+                    try_again=True, stop=True)
+
+
+@scenario("g3.stale_state_after_send", "G3", "A state answer from before Send, delivered after its retries ran out, "
+          "decides nothing; Try again then delivers it once", needs=("fake",))
+def _(b: BCtx) -> None:
+    page, _lid, _c = b.open_window(28)
+    created = _creations(b)
+    seen = {"chat": 0, "state": 0}
+
+    def decide(stage: str, params: dict) -> str:
+        url = params["request"]["url"]
+        if "/api/state" in url:
+            seen["state"] += 1
+            return "hold" if seen["state"] == 1 else "continue"
+        seen["chat"] += 1
+        return "fail" if seen["chat"] <= 3 else "continue"   # the Send never reaches the plugin
+    control = FetchControl(page, [{"urlPattern": "*/api/state", "requestStage": "Response"},
+                                  {"urlPattern": "*/api/chat", "requestStage": "Request"}], decide)
+    try:
+        b.check("a state answer from before the Send is held", control.wait_held(1, 10), True, False)
+        b.send(page, "Reordered state [md]")
+        b.check("retries ran out: delivery not known", b.wait_text(page, UNDECIDED_TEXT, 10), True,
+                page.eval("document.getElementById('messages').innerText.slice(-300)"))
+        control.release_all()   # the old answer (no turn) arrives now
+        time.sleep(4.0)
+        body = page.eval("document.body.innerText")
+        b.check("the stale state answer made no non-delivery claim", NO_NON_DELIVERY not in body, False, body[-300:])
+        state = page.eval(COMPOSER_STATE)
+        b.check("no fresh Send and no New chat; Try again offered",
+                state == {"send": True, "input": True, "newChat": True, "retry": True}, "all true", state)
+        page.eval("document.getElementById('desk-connect-button').click()")
+        count = REPLY_COUNT % json.dumps("Sales by region")
+        shown = page.wait_for(f"{count} >= 1", 15)
+        b.check("Try again delivered it and the reply is shown", bool(shown), True,
+                page.eval("document.getElementById('messages').innerText.slice(-300)"))
+        time.sleep(7.0)
+        b.check("shown exactly once", page.eval(count) == 1, 1, page.eval(count))
+        runs = _creations(b) - created
+        b.check("one run for one Send", runs == 1, 1, runs)
+        b.check("zero securitypolicyviolation events", b.csp(page) == [], [], b.csp(page))
+    finally:
+        control.close()
+
+
+@scenario("g3.new_chat_stale_state", "G3", "A state answer from before New chat, delivered after it, neither shows the "
+          "cleared reply again nor an unknown-turn error", needs=("fake",))
+def _(b: BCtx) -> None:
+    page, _lid, _c = b.open_window(29)
+    b.send(page, "Before New chat [md]")
+    count = REPLY_COUNT % json.dumps("Sales by region")
+    b.check("the reply is shown", bool(page.wait_for(f"{count} >= 1", 15)), True, False)
+    page.wait_for("!document.getElementById('new-chat-button').disabled", 5)
+    seen = {"state": 0}
+
+    def decide(stage: str, params: dict) -> str:
+        seen["state"] += 1
+        return "hold" if seen["state"] == 1 else "continue"
+    control = FetchControl(page, [{"urlPattern": "*/api/state", "requestStage": "Response"}], decide)
+    try:
+        b.check("a state answer naming the old turn is held", control.wait_held(1, 10), True, False)
+        page.eval("document.getElementById('new-chat-button').click()")
+        cleared = page.wait_for("document.getElementById('messages').children.length === 0", 5)
+        b.check("New chat cleared the log", bool(cleared), True, False)
+        control.release_all()
+        time.sleep(4.0)
+        body = page.eval("document.body.innerText")
+        b.check("no unknown-turn error", "not the window's current one" not in body, False, body[-300:])
+        b.check("the cleared reply is not shown again", page.eval(count) == 0, 0, page.eval(count))
+        status = page.eval("document.getElementById('connection-status').textContent")
+        b.check("the status is not an error", status != "Error", "not Error", status)
+        b.check("zero securitypolicyviolation events", b.csp(page) == [], [], b.csp(page))
+    finally:
+        control.close()
+
+
 def run_scenarios(make_target: Callable[[], Any], *, evidence: Optional[Path], tag: str, only: list[str] = (),
                   headless: bool = True) -> list[dict[str, Any]]:
     results = []

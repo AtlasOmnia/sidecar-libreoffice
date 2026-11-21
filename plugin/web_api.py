@@ -15,9 +15,11 @@ headers; static files are served only from ``plugin/sidebar/`` when listed in it
 
 Turns: ``/api/chat`` claims synchronously and starts one worker through ``ChatBridge.begin_turn``;
 this module keeps per session only the current turn record (reply text, outcome, a version
-number ``seq``) that ``/api/turn`` long-polls read. User Stop, a window that went away, and every
-end of a session only call ``ChatBridge.request_stop``: the worker that drives the run sends the
-stop, so a run never leaves the 0.4.0 ownership rules.
+number ``seq``) that ``/api/turn`` long-polls read, the turn being admitted (``starting``) and
+the ``send_id`` values already used. User Stop, a window that went away, and every end of a
+session only call ``ChatBridge.request_stop``, which sends the stop at once from a short-lived
+thread of the bridge when the run's id is known; the worker that drives the run still settles
+and releases it, so a run never leaves the 0.4.0 ownership rules.
 
 Locks: this module's ``_cond`` may be held while calling into the bridge (``request_stop``,
 ``session_state``), never the other way round: the bridge calls back (outcome, run state, close
@@ -113,6 +115,7 @@ ERRORS = {
     "worker_failed": (503, TURN_WORKER_FAILED),
     "message_invalid": (400, f"message must be 1 to {MAX_MESSAGE} characters"),
     "unknown_turn": (404, "This reply is not the window's current one."),
+    "already_sent": (409, "This message was already sent to Hermes; it is not sent again."),
     "turn_running": (409, "Wait for the reply, or press Stop first."),
     "turned_off": (503, "The LibreOffice plugin was turned off in Hermes."),
     "internal": (500, "the chat endpoint failed"),
@@ -159,7 +162,7 @@ class Turn:
     request answers with this turn instead of starting another (6.3)."""
 
     __slots__ = ("id", "seq", "state", "run", "reply", "outcome", "last_poll", "in_flight", "poll_gen", "gone",
-                 "shown", "send_id", "send_digest")
+                 "shown", "send_id", "send_digest", "refusal")
 
     def __init__(self, turn_id: str, now: float, send_id: Optional[str] = None, send_digest: bytes = b"") -> None:
         self.id, self.seq, self.state = turn_id, 1, "working"
@@ -172,6 +175,7 @@ class Turn:
         self.gone = False         # the window-gone stop was requested
         self.shown: Optional[str] = None
         self.send_id, self.send_digest = send_id, send_digest
+        self.refusal: Optional[WebError] = None   # why its admission was refused (it was never published)
 
 
 class _Call:
@@ -382,6 +386,10 @@ class WebApi:
         return self._api(call, name, raw)
 
     def _resolve(self, family: str, path: str) -> tuple:
+        if not (path.isascii() and path.isprintable()):
+            # No route has such a path, and the launcher's MAC covers the path as ASCII (3.2):
+            # refused here, before any MAC is computed, as an unknown path.
+            raise WebError("not_found")
         route, mark, query = path.partition("?")
         if "#" in path:
             raise WebError("not_found")
@@ -616,40 +624,78 @@ class WebApi:
         with self._cond:
             if session.ended is not None:
                 raise WebError("no_session", ended=session.ended)
-            current = session.turn
-            if send_id is not None and current is not None and current.send_id == send_id:
-                # A retry of the request that started the current turn (its answer was lost):
-                # the same turn, nothing new is sent to Hermes (6.3).
-                if current.send_digest != digest:
-                    raise WebError("bad_request")
-                answer = (200, {"ok": True, "turn": self._view(current), "replayed": True})
-            else:
-                answer = None
-                if session.starting:
+            replay = self._same_send(session, send_id, digest) if send_id is not None else None
+            if replay is None:
+                if session.starting is not None:
                     raise WebError("busy")
-                session.starting = True
                 chat_session_id, document = session.chat_session_id, session.document
                 turn = Turn(auth.new_short_id(), self._clock(), send_id, digest)
-        if answer is not None:
-            return self._send(call, *answer)
+                # The reservation: held from here until the turn is published or refused, in ONE
+                # critical section each, so no request ever sees neither (6.3).
+                session.starting = turn
+        if replay is not None:
+            return self._send(call, 200, {"ok": True, "turn": self._view(replay), "replayed": True})
         try:
             run = self.bridge.begin_turn(chat_session_id, compose_message(message.strip(), document),
                                          lambda _run, outcome: self.turn_done(turn, outcome))
-        except ChatError as exc:
-            raise WebError(_claim_code(exc), str(exc)) from None
-        finally:
+        except BaseException as exc:
+            refusal = (WebError(_claim_code(exc), str(exc)) if isinstance(exc, ChatError) else WebError("internal"))
             with self._cond:
-                session.starting = False
+                turn.refusal = refusal
+                session.starting = None
+                self._cond.notify_all()
+            if isinstance(exc, Exception):
+                raise refusal from None
+            raise
         with self._cond:
             turn.run = run
             turn.shown = HERMES_STATES.get(run.hermes_state)
+            session.starting = None
             if session.ended is not None:   # the session ended while the run was claimed
                 self.bridge.request_stop(run)
+                self._cond.notify_all()
                 raise WebError("no_session", ended=session.ended)
             session.turn = turn
+            if send_id is not None:
+                session.sent_ids[send_id] = None
+                while len(session.sent_ids) > auth.SENT_IDS_KEPT:
+                    session.sent_ids.popitem(last=False)
             self._cond.notify_all()
             view = self._view(turn)
         self._send(call, 202, {"ok": True, "turn": view, "replayed": False})
+
+    def _same_send(self, session: auth.Session, send_id: str, digest: bytes) -> Optional[Turn]:
+        """A request whose ``send_id`` this session has already seen (lock held): the turn it
+        started (a replay: nothing is sent to Hermes), after waiting for an admission of the same
+        Send still in progress; None when the id is new. Raises the refusal that admission got,
+        ``bad_request`` for another message under the same id, ``already_sent`` for an id whose
+        turn is no longer the current one, or ``busy`` when the admission takes longer than a
+        long-poll (6.3)."""
+        current, pending = session.turn, session.starting
+        if current is not None and current.send_id == send_id:
+            if current.send_digest != digest:
+                raise WebError("bad_request")
+            return current
+        if pending is not None and pending.send_id == send_id:
+            if pending.send_digest != digest:
+                raise WebError("bad_request")
+            deadline = time.monotonic() + self.long_poll_seconds
+            while session.starting is pending:
+                if self._closing:
+                    raise WebError("turned_off", ended="turned_off")
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise WebError("busy")
+                self._cond.wait(left)
+            if session.ended is not None:
+                raise WebError("no_session", ended=session.ended)
+            refusal = pending.refusal
+            if refusal is not None:
+                raise WebError(refusal.code, refusal.message, ended=refusal.ended)
+            return pending
+        if send_id in session.sent_ids:
+            raise WebError("already_sent")
+        return None
 
     def _stop(self, call: _Call, session: auth.Session, turn_id: Any) -> None:
         if not isinstance(turn_id, str) or not auth.SHORT_ID_RE.fullmatch(turn_id):

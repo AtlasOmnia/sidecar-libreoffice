@@ -75,8 +75,9 @@
     newChat: "New chat",
     replyFailed: "I couldn't complete that request.",
     checkingSend: "Checking that Hermes got your message…",
-    sendUnknown: "It is not known whether Hermes received this message. If it did, its reply appears here; check the document before you send it again.",
-    sendLost: "Your message did not reach Hermes. Send it again.",
+    sendUnknown: "It is not known yet whether Hermes received this message. If it did, its reply appears here. Try again asks once more; Hermes never runs the same message twice.",
+    sendRetry: "Hermes has not confirmed your last message. Try again asks once more; the same message is never run twice.",
+    alreadySent: "Hermes already received this message, so it was not sent again. Check the document.",
     emptyReply: "Hermes finished without a reply.",
     copyLink: "Copy link",
     copied: "Copied",
@@ -106,8 +107,10 @@
   var info = { document: null, endpoint: "", chatLabel: "", chatReady: false, chatReason: null, maxMessage: 8000 };
   var turn = null;             // { id, seq, have, text, state, stopSent }
   var seenTurns = {};          // ids of the turns this window has followed, so each reply is shown once
-  var pendingSend = null;      // { id, message, tries, unknown } while it is not known whether Send arrived
+  var pendingSend = null;      // { id, message, tries, unknown } until this Send's own turn or refusal arrives
   var sending = false;
+  var newChatPending = false;  // a New chat request is on its way: no Send, no state adoption
+  var epoch = 0;               // grows at each Send and New chat: a state answer from before is stale
   var focusStop = false;       // Send came from the composer: move focus to Stop once it is usable
   var unreachable = false;
   var statePending = false;
@@ -208,6 +211,8 @@
     turn = null;
     pendingSend = null;
     sending = false;
+    newChatPending = false;
+    epoch += 1;
     stopStatePolling();
     setRunning(false);
     setComposerEnabled(false);
@@ -300,6 +305,8 @@
     if (!info.chatReady) {
       showConnect(CHAT_OFF_TEXTS[info.chatReason] || CHAT_OFF_TEXTS.other, false);
       if (!turn) setStatus(TEXTS.chatOff);
+    } else if (pendingSend && pendingSend.unknown && !sending) {
+      showConnect(TEXTS.sendRetry, true);   // the Try again of this Send stays offered
     } else {
       byId("desk-connect").hidden = true;
       var current = byId("connection-status").textContent;
@@ -310,36 +317,33 @@
 
     // A turn this window has not followed yet, also one that has already ended (the answer to Send
     // was lost and the reply finished before this poll): follow it, so its reply is shown once.
+    // While a Send is undecided only that Send's own turn (its send_id) decides it: a state without
+    // it proves nothing (the Send may still be admitted, or this answer left before it arrived).
     var view = data.turn;
     if (!turn && !sending && view && typeof view === "object" && typeof view.id === "string" &&
-        !Object.prototype.hasOwnProperty.call(seenTurns, view.id)) {
-      pendingSend = null;
+        !Object.prototype.hasOwnProperty.call(seenTurns, view.id) &&
+        (!pendingSend || view.send_id === pendingSend.id)) {
+      settlePending();
       startTurn(view);
       return;
-    }
-    if (pendingSend && pendingSend.unknown && !sending) {
-      // The plugin answered and holds no turn of that Send: it never arrived.
-      var lost = pendingSend;
-      pendingSend = null;
-      addMessage("assistant", null, TEXTS.sendLost);
-      var input = byId("prompt-input");
-      if (!input.value) input.value = lost.message;
-      setStatus(info.chatReady ? TEXTS.ready : TEXTS.chatOff);
     }
     setRunning(!!turn || sending);
   }
 
+  // An answer to a state poll is applied only when no Send or New chat began after the poll was
+  // sent (the plugin may have answered it before either arrived).
   function pollState() {
-    if (!session || turn || sending || statePending) return;
+    if (!session || turn || sending || statePending || newChatPending) return;
     statePending = true;
+    var asked = epoch;
     api("GET", "/api/state").then(function (result) {
       statePending = false;
-      if (!session) return;
+      if (!session || asked !== epoch) return;
       if (result.ok) applyState(result.data);
       else if (!handleSessionEnd(result)) showUnreachable();
     }, function () {
       statePending = false;
-      if (session) showUnreachable();
+      if (session && asked === epoch) showUnreachable();
     });
   }
   function startStatePolling() {
@@ -353,7 +357,7 @@
 
   function showUnreachable() {
     unreachable = true;
-    showConnect(TEXTS.unreachable, true);
+    showConnect(pendingSend && pendingSend.unknown ? TEXTS.unreachable + " " + TEXTS.sendRetry : TEXTS.unreachable, true);
     setStatus(TEXTS.unreachableStatus);
     setComposerEnabled(false);
   }
@@ -375,7 +379,7 @@
   function sendPrompt() {
     var input = byId("prompt-input");
     var prompt = input.value.trim();
-    if (!prompt || !session || turn || sending || !info.chatReady || unreachable) return;
+    if (!prompt || !session || turn || sending || pendingSend || newChatPending || !info.chatReady || unreachable) return;
     if (codePoints(prompt) > info.maxMessage) {
       setStatus("A message can have at most " + info.maxMessage + " characters.");
       return;
@@ -383,6 +387,7 @@
     focusStop = document.activeElement === input || document.activeElement === byId("send-button");
     input.value = "";
     addMessage("user", prompt);
+    epoch += 1;
     pendingSend = { id: newSendId(), message: prompt, tries: 0, unknown: false };
     setStatus(TEXTS.working);
     deliver(pendingSend);
@@ -390,7 +395,10 @@
 
   // One Send, made idempotent by its send_id (contract 6.3): when the answer is lost, the same
   // request is sent again, and the plugin answers with the turn the first one started instead of
-  // starting another. Nothing is sent again once SEND_TRIES requests went unanswered.
+  // starting another (it waits for that first request if it is still being admitted). After
+  // SEND_TRIES unanswered requests nothing is sent on its own: the Send stays undecided (no fresh
+  // send_id, no New chat) until the state poll shows its turn or the user presses Try again,
+  // which sends the same request once more.
   function deliver(p) {
     if (pendingSend !== p || !session) return;
     p.tries += 1;
@@ -400,7 +408,7 @@
       if (pendingSend !== p) return;
       if (result.ok && result.data.turn && typeof result.data.turn.id === "string") {
         sending = false;
-        pendingSend = null;
+        settlePending();
         startTurn(result.data.turn);
         return;
       }
@@ -413,9 +421,18 @@
         return;
       }
       sending = false;
-      pendingSend = null;
+      settlePending();
       focusStop = false;
-      showTurnError(sentence(result.data.error, TEXTS.replyFailed));
+      if (code === "already_sent") {
+        // An earlier request of this Send started its turn, which this window no longer follows.
+        addMessage("assistant", null, TEXTS.alreadySent);
+        setStatus(TEXTS.uncertain);
+      } else {
+        // A refusal for this send_id: the plugin did not start it.
+        var input = byId("prompt-input");
+        if (!input.value) input.value = p.message;
+        showTurnError(sentence(result.data.error, TEXTS.replyFailed));
+      }
       finishRunning();
     }, function () {
       if (pendingSend === p) retryDelivery(p);
@@ -428,14 +445,36 @@
       setTimeout(function () { deliver(p); }, RETRY_MS);
       return;
     }
-    // Not known whether it arrived. No blind resend: the state poll shows its turn if it did,
-    // and lets the user send again only once the plugin answers without it.
+    // Not known whether it arrived. No blind resend and no fresh send_id: the state poll shows
+    // its turn if it did; Try again asks once more with the same send_id.
     sending = false;
     focusStop = false;
+    if (!p.unknown) addMessage("assistant", null, TEXTS.sendUnknown);
     p.unknown = true;
-    addMessage("assistant", null, TEXTS.sendUnknown);
     setStatus(TEXTS.uncertain);
+    showConnect(unreachable ? TEXTS.unreachable + " " + TEXTS.sendRetry : TEXTS.sendRetry, true);
     finishRunning();
+  }
+
+  // Try again for an undecided Send: one more request with the same send_id.
+  function retryPending() {
+    var p = pendingSend;
+    if (!p || !p.unknown || sending || !session) return;
+    p.tries = SEND_TRIES - 1;
+    setStatus(TEXTS.checkingSend);
+    deliver(p);
+  }
+
+  // The undecided Send is decided (its turn, or a refusal): drop it and its Try again.
+  function settlePending() {
+    var p = pendingSend;
+    pendingSend = null;
+    if (p && p.unknown && !unreachable) byId("desk-connect").hidden = true;
+  }
+
+  function onConnectButton() {
+    if (pendingSend && pendingSend.unknown) retryPending();
+    else pollState();
   }
 
   function newSendId() {
@@ -573,10 +612,19 @@
     });
   }
 
+  // New chat is one request at a time and never overlaps a Send: while it is on its way no Send
+  // starts and no state answer is applied, and a state answer from before it is dropped.
   function newChat() {
-    if (!session || turn || sending || pendingSend) return;
-    byId("new-chat-button").disabled = true;
+    if (!session || turn || sending || pendingSend || newChatPending) return;
+    newChatPending = true;
+    epoch += 1;
+    setRunning(false);
+    var done = function () {
+      newChatPending = false;
+      epoch += 1;
+    };
     api("POST", "/api/new-chat", {}).then(function (result) {
+      done();
       if (result.ok) {
         seenTurns = {};
         byId("messages").replaceChildren();
@@ -590,6 +638,7 @@
       }
       setRunning(!!turn || sending);
     }, function () {
+      done();
       setRunning(!!turn || sending);
       showUnreachable();
     });
@@ -766,7 +815,7 @@
   }
 
   function setRunning(isRunning) {
-    var usable = !!session && !ended && info.chatReady && !unreachable && !pendingSend;
+    var usable = !!session && !ended && info.chatReady && !unreachable && !pendingSend && !newChatPending;
     byId("send-button").disabled = isRunning || !usable;
     byId("prompt-input").disabled = isRunning || !usable;
     byId("stop-button").disabled = !isRunning || !turn || turn.stopSent;
@@ -794,7 +843,7 @@
     byId("send-button").addEventListener("click", sendPrompt);
     byId("stop-button").addEventListener("click", stopTurn);
     byId("new-chat-button").addEventListener("click", newChat);
-    byId("desk-connect-button").addEventListener("click", pollState);
+    byId("desk-connect-button").addEventListener("click", onConnectButton);
     byId("prompt-input").addEventListener("keydown", function (event) {
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
         event.preventDefault();

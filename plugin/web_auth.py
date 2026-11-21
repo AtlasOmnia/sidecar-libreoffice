@@ -269,11 +269,14 @@ class Launches:
 
 # -- sessions (6.1, 6.8) --
 
+SENT_IDS_KEPT = 64
+
+
 class Session:
     """One Sidecar window's session. ``turn`` and the long-poll fields belong to web_api."""
 
     __slots__ = ("digest", "document", "host_scheme", "mode", "bounds", "chat_session_id", "created", "last_seen",
-                 "launch_id", "turn", "parked", "starting", "ended")
+                 "launch_id", "turn", "parked", "starting", "sent_ids", "ended")
 
     def __init__(self, token_digest: bytes, launch: Launch, now: float) -> None:
         self.digest = token_digest
@@ -284,7 +287,10 @@ class Session:
         self.launch_id = launch.launch_id
         self.turn: Any = None
         self.parked = 0          # long-polls of this session in flight
-        self.starting = False    # an /api/chat is claiming a run for this session right now
+        self.starting: Any = None   # the turn an /api/chat is admitting right now (web_api.Turn), else None
+        # send_ids of the turns this session has started, newest last (at most SENT_IDS_KEPT), so a
+        # late or repeated request of an earlier Send never starts a run again (6.3).
+        self.sent_ids: "OrderedDict[str, None]" = OrderedDict()
         self.ended: Optional[str] = None
 
 

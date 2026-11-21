@@ -74,6 +74,28 @@ class Target:
     def set_token(self, on: bool) -> None:
         raise NotImplementedError
 
+    def admission_bridge(self) -> Any:
+        raise NotImplementedError
+
+    def hold_admission(self) -> Callable[[], None]:
+        """Hold every ``/api/chat`` admission (``ChatBridge.begin_turn``) until the returned
+        function is called: the window's Send is then still being admitted. Capability
+        ``admission``."""
+        import threading
+        bridge = self.admission_bridge()
+        original, gate = bridge.begin_turn, threading.Event()
+
+        def held(*args: Any, **kwargs: Any) -> Any:
+            gate.wait(60)
+            return original(*args, **kwargs)
+        bridge.begin_turn = held
+
+        def release() -> None:
+            gate.set()
+            if bridge.__dict__.get("begin_turn") is held:
+                del bridge.begin_turn
+        return release
+
     def close(self) -> None:
         pass
 
@@ -95,8 +117,11 @@ class StubTarget(Target):
         self.port = self.stub.start()
         self.token = self.stub.token
         self._token = self.token
-        self.capabilities = frozenset({"unload", "ready", "token", "fake", "logs", "ui_dir", "fast_timing"}
-                                      if fast else {"unload", "ready", "token", "fake", "logs", "ui_dir"})
+        self.capabilities = frozenset({"unload", "ready", "token", "fake", "logs", "ui_dir", "admission", "fast_timing"}
+                                      if fast else {"unload", "ready", "token", "fake", "logs", "ui_dir", "admission"})
+
+    def admission_bridge(self) -> Any:
+        return self.stub.bridge
 
     def unload(self, budget: Optional[float] = None) -> int:
         return self.stub.close(budget)
@@ -142,8 +167,11 @@ class PluginTarget(Target):
         self.port = self.bridge.port
         self.timing = dict(CONTRACT_TIMING, **getattr(self.bridge, "web_timing", {}))
         fast = all(self.timing.get(k) == v for k, v in FAST_TIMING.items())
-        self.capabilities = frozenset({"unload", "ready", "token", "fake", "logs", "ui_dir"}
+        self.capabilities = frozenset({"unload", "ready", "token", "fake", "logs", "ui_dir", "admission"}
                                       | ({"fast_timing"} if fast else set()))
+
+    def admission_bridge(self) -> Any:
+        return self.bridge
 
     def unload(self, budget: Optional[float] = None) -> int:
         return self.bridge.close(budget)

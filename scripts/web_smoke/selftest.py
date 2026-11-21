@@ -66,7 +66,7 @@ class StubSmokeTests(unittest.TestCase):
             ui = Path(tmp)
             (ui / "index.html").write_text("<!doctype html><title>t</title>")
             digest = hashlib.sha256((ui / "index.html").read_bytes()).hexdigest()
-            (ui / "SHA256SUMS").write_text(f"{digest}  index.html\n")
+            (ui / "SHA256SUMS").write_bytes(f"{digest}  index.html\n".encode("ascii"))
             stub = stub_server.Stub(ui)
             port = stub.start()
             try:

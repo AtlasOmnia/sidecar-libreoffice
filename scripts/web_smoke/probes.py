@@ -761,7 +761,8 @@ def _rewrite_sums(ui: Path, extra: dict[str, str]) -> str:
     original = (ui / "SHA256SUMS").read_text()
     sums = contract.parse_sha256sums(original) or {}
     sums.update(extra)
-    (ui / "SHA256SUMS").write_text("".join(f"{v}  {k}\n" for k, v in sorted(sums.items())))
+    # bytes: write_text would write CRLF on Windows, and the plugin reads SHA256SUMS strictly (LF)
+    (ui / "SHA256SUMS").write_bytes("".join(f"{v}  {k}\n" for k, v in sorted(sums.items())).encode("ascii"))
     return original
 
 
@@ -789,7 +790,7 @@ def _(c: Ctx) -> None:
     os.symlink(path, ui / "linked.js")
     saved = _rewrite_sums(ui, {"linked.js": sums[target_rel]})
     c.expect("listed symlink", c.req("GET", "/ui/linked.js", []), 404, "not_found")
-    (ui / "SHA256SUMS").write_text(saved)
+    (ui / "SHA256SUMS").write_bytes(saved.encode("ascii"))
     for bad in ("/ui/../SHA256SUMS", "/ui/%2e%2e/SHA256SUMS", "/ui/vendor%2fpurify.js", "/ui/vendor\\purify.js",
                 "/ui/index.html?x=1", "/ui/INDEX.html", "/ui/./index.html", "/ui//index.html", "/ui/index.html/",
                 "/ui/SHA256SUMS", "/ui/vendor/VENDOR.json", "/ui/UPSTREAM.json", "/ui/vendor/dompurify.LICENSE",

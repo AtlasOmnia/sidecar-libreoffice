@@ -106,9 +106,11 @@
   }
 
   function setWorking(working) {
+    const blocked = working || !!pending || newChatPending;
     $("stop-button").disabled = !working;
-    $("send-button").disabled = working;
-    $("new-chat-button").disabled = working;
+    $("send-button").disabled = blocked;
+    $("prompt-input").disabled = !!pending || newChatPending;
+    $("new-chat-button").disabled = blocked;
   }
 
   function turnStatus(t) {
@@ -144,13 +146,22 @@
     }, () => setTimeout(followTurn, 1000));
   }
 
-  // Contract revision 3 (6.3, 7.2): one send_id per Send, the same id on a retry of a lost answer;
-  // a turn the state poll reports that this window has not followed is followed, also when ended.
+  // Contract revision 4 (6.3, 7.2): one send_id per Send, the same id on every retry; a turn the
+  // state poll reports that this window has not followed is followed, also when ended, but while a
+  // Send is undecided only its own turn (same send_id) decides it; nothing is concluded from a
+  // state without it. Try again re-sends the same send_id. State answers from before a Send or a
+  // New chat are dropped (epoch); New chat never overlaps a Send.
   const seen = new Set();
   let pending = null;
+  let newChatPending = false;
+  let epoch = 0;
+  function settle() {
+    if (pending && pending.unknown) $("desk-connect").hidden = true;
+    pending = null;
+  }
   function startTurn(view) {
     seen.add(view.id);
-    pending = null;
+    settle();
     turn = { id: view.id, seq: view.seq || 0, text: "" };
     setWorking(true);
     setStatus(turnStatus(view));
@@ -167,27 +178,35 @@
     api("POST", "/api/chat", { message: p.message, send_id: p.id }).then((res) => {
       if (handleAuth(res) || pending !== p) return;
       if ((res.status === 202 || res.status === 200) && res.data.turn) { startTurn(res.data.turn); return; }
-      if ((res.data.code === "endpoint_busy" || (res.data.code === "busy" && p.tries > 1)) && p.tries < 3) {
-        setTimeout(() => deliver(p), 1000);
-        return;
-      }
-      pending = null;
+      if (res.data.code === "endpoint_busy" || (res.data.code === "busy" && p.tries > 1)) { undecided(p); return; }
+      settle();
       addMessage("assistant notice").textContent = res.data.error;
-    }, () => {
-      if (pending !== p) return;
-      if (p.tries < 3) { setTimeout(() => deliver(p), 1000); return; }
-      p.unknown = true;   // the state poll decides
-      addMessage("assistant notice").textContent = "It is not known whether Hermes received this message.";
-    });
+      setWorking(false);
+    }, () => { if (pending === p) undecided(p); });
+  }
+  function undecided(p) {
+    if (p.tries < 3) { setTimeout(() => deliver(p), 1000); return; }
+    if (!p.unknown) addMessage("assistant notice").textContent = "It is not known yet whether Hermes received this message.";
+    p.unknown = true;   // its own turn in a state poll, or Try again with the same send_id, decides
+    $("desk-connect").hidden = false;
+    $("desk-connect-text").textContent = "Hermes has not confirmed your last message. Try again asks once more.";
+    $("desk-connect-button").hidden = false;
+  }
+  function retryPending() {
+    if (!pending || !pending.unknown) return;
+    pending.tries = 2;
+    deliver(pending);
   }
   function send() {
     const input = $("prompt-input");
     const message = input.value;
-    if (!session || turn || pending || !message.trim()) return;
+    if (!session || turn || pending || newChatPending || !message.trim()) return;
     addMessage("user").textContent = message;
     input.value = "";
     input.focus();
+    epoch += 1;
     pending = { id: newSendId(), message, tries: 0, unknown: false };
+    setWorking(false);
     deliver(pending);
   }
 
@@ -204,17 +223,17 @@
     $("bridge-session-id").textContent = data.chat_label || "";
     $("bridge-status").textContent = data.chat.ready ? "LibreOffice connected" : "Chat unavailable: " + data.chat.reason;
     if (!turn) setStatus(data.chat.ready ? "Ready" : "Chat is not ready (" + data.chat.reason + ")");
-    if (data.turn && !turn && !seen.has(data.turn.id) && (!pending || pending.unknown)) {
+    if (data.turn && !turn && !seen.has(data.turn.id) && (!pending || (pending.unknown && data.turn.send_id === pending.id))) {
       startTurn(Object.assign({}, data.turn, { seq: 0 }));
-    } else if (pending && pending.unknown) {
-      pending = null;
-      addMessage("assistant notice").textContent = "Your message did not reach Hermes. Send it again.";
     }
   }
 
   function pollState() {
-    if (!session || turn || document.visibilityState !== "visible") return;
-    api("GET", "/api/state").then((res) => { if (!handleAuth(res) && res.status === 200) applyState(res.data); });
+    if (!session || turn || newChatPending || document.visibilityState !== "visible") return;
+    const asked = epoch;
+    api("GET", "/api/state").then((res) => {
+      if (asked === epoch && !handleAuth(res) && res.status === 200) applyState(res.data);
+    });
   }
 
   function start() {
@@ -249,9 +268,18 @@
     });
     $("send-button").addEventListener("click", send);
     $("stop-button").addEventListener("click", stop);
+    $("desk-connect-button").addEventListener("click", retryPending);
     $("new-chat-button").addEventListener("click", () => {
+      if (!session || turn || pending || newChatPending) return;
+      newChatPending = true;
+      epoch += 1;
+      setWorking(false);
       api("POST", "/api/new-chat", {}).then((res) => {
+        newChatPending = false;
+        epoch += 1;
+        setWorking(!!turn);
         if (handleAuth(res)) return;
+        if (res.status === 200) seen.clear();
         if (res.status === 200) { $("messages").replaceChildren(); $("bridge-session-id").textContent = res.data.chat_label; }
         else addMessage("assistant notice").textContent = res.data.error;
       });

@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Atlas Omnia
 """The seam the 0.5.0 web routes use: ``_claim`` + ``_drive``, ``begin_turn`` (one worker per
-run), a user Stop that only sets ``stop_requested``, the ``user`` outcome, ``session_state`` for
-New chat, and ``add_route_handler`` for routes defined in other modules.
+run), a user Stop (``stop_requested``, and the stop sent at once by a short-lived thread of its
+own once the run's id is known), the ``user`` outcome, ``session_state`` for New chat, and
+``add_route_handler`` for routes defined in other modules.
 
 The Runs API and the clock are the scripted fakes from ``test_run_ownership`` (imported, not
 changed), so lost answers and stop races are exact and need no model or network.

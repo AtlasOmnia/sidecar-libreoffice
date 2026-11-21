@@ -468,7 +468,12 @@ class BudgetTests(WebCase):
         self.assertEqual((status, value["turn"]["state"]), (202, "stopping"))
         self.assertLess(time.monotonic() - started, 2.0)
         polls[0][0].join(10)
-        self.assertEqual(polls[0][1][0][1]["turn"]["state"], "stopping")
+        # The parked long-poll answers the change at once; with the stop sent immediately, the run
+        # can already have settled by the time that thread runs, so it may report the outcome.
+        woken = polls[0][1][0][1]["turn"]
+        self.assertIn(woken["state"], ("stopping", "done"))
+        if woken["state"] == "done":
+            self.assertEqual(woken["outcome"]["kind"], "user")
         self.api.finish.set()
         for thread, _results in polls[1:]:
             thread.join(10)
