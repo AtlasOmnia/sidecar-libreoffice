@@ -11,6 +11,10 @@ This is the frozen contract between the four parts of the 0.5.0 Sidecar window:
 
 Every byte format below is normative. A change after the freeze is a new revision of this file,
 agreed by the plugin and launcher owners, with the test vectors updated in the same commit.
+**Revision 2 (integration of the 0.5.0 lanes)** settles what the lanes reported: the gate order
+with 404/405 (1.2), the legacy and unload refusals, the browser probe paths, the `chat_label`
+form, leading zeros, malformed launch ids, the sanitizer option, the theme script's name, the
+panel texts outside 8.2, the macOS helper programs and the Windows tab-only path (13.2, 14).
 Labels such as R18, D1 or S1 are the requirement, owner-decision and spike numbers of the 0.5.0
 design review; the spike results that fixed a detail are quoted where they apply.
 
@@ -49,10 +53,17 @@ top-left of the main display, y downwards, in points (not device pixels).
 `/health` and `/chat` are kept unchanged through 0.5.x for 0.4.0 extensions and are deprecated
 for removal in 0.6.0 (owner decision D2). Any other path answers 404; any other method on a
 listed path answers 405 (section 10). `OPTIONS` and `HEAD` are never answered with CORS headers.
+The paths browsers ask for on their own, `/`, `/favicon.ico` and `/apple-touch-icon*`, get the
+JSON 404 `not_found` of the new routes with label `unknown` (not the legacy 404 "unknown route").
 
 ### 1.2 Request gates, in this order
 
 1. **Host.** Exactly one `Host` header, equal to `HOST`. Otherwise 403 `bad_host`.
+   - While the plugin unloads, every request that passed the Host gate answers 503 `turned_off`.
+     On `/api/*` the answer adds `"ended": "turned_off"`; on the other families it has no `ended`.
+   - **Route and method** come next: an unknown path answers 404 `not_found` and a known path
+     with another method 405 `method_not_allowed` (section 10), before any credential is
+     looked at. A foreign credential therefore never outranks 404 or 405.
 2. **Role separation.** Each route family accepts only its own credential headers and refuses
    a request that carries a foreign one with 403 `forbidden_credential`:
 
@@ -63,7 +74,9 @@ listed path answers 405 (section 10). `OPTIONS` and `HEAD` are never answered wi
    | `/ui/*` | `X-Hermes-Plugin-Key`, `X-Sidecar-Session`, `X-Sidecar-Channel`, `X-Sidecar-Counter`, `X-Sidecar-MAC` |
    | `/api/*` | `X-Hermes-Plugin-Key`, `X-Sidecar-Channel`, `X-Sidecar-Counter`, `X-Sidecar-MAC` |
 
-   (The legacy pair keeps its existing `Origin` refusal: 403 "requests with an Origin are refused".)
+   (The legacy pair checks `Host` first, then keeps its existing `Origin` refusal: 403 "requests
+   with an Origin are refused". A legacy request carrying any `Sec-Fetch-*` header or a Sidecar
+   credential header gets 403 "requests with Sidecar window credentials are refused here".)
 3. **Fetch metadata on `/api/*`.** If `Sec-Fetch-Site` is present it must be `same-origin`
    (else 403 `cross_site`). On a POST, exactly one `Origin` equal to `ORIGIN` is required (else
    403 `bad_origin`). On a GET, an `Origin` if present must equal `ORIGIN`; if `Origin` is absent,
@@ -75,7 +88,8 @@ listed path answers 405 (section 10). `OPTIONS` and `HEAD` are never answered wi
    413), arriving whole within the request's single read deadline (else 408 / 400). The body must
    be a JSON object with exactly the keys listed for the route (else 400 `bad_request`). GET
    requests carry no body.
-5. **Credential** (session header, channel MAC, bearer token), per route family.
+5. **Credential** (session header, channel MAC, bearer token), per route family. On
+   `/launcher/launch/<launch_id>` the id is checked only after the channel MAC (4.2).
 
 Duplicate `Host`, `Origin`, `X-Sidecar-Session`, `X-Sidecar-Channel`, `X-Sidecar-Counter` or
 `X-Sidecar-MAC` headers are refused as if the value were wrong.
@@ -221,7 +235,10 @@ and `bounds` given here. Unexchanged codes are purged at expiry.
 ### 4.2 `GET /launcher/launch/<launch_id>`
 
 200 `{"ok": true, "state": "pending" | "exchanged" | "expired" | "double_use"}`; 404 `not_found`
-for an unknown id. Records are kept 120 s from minting. The launcher polls every 500 ms on a
+for an unknown id. Any request target `/launcher/launch/<anything>` without a query string is this
+route, so a malformed id (wrong length, other characters, an extra `/`) is answered after the
+channel MAC like an unknown id: a **signed** 404 `not_found`. A query string makes it an unknown
+path (unsigned 404, before the channel is checked). Records are kept 120 s from minting. The launcher polls every 500 ms on a
 worker thread for up to 20 s (R11) and deletes the bootstrap file at the first state other than
 `pending`, or after 30 s, whichever comes first.
 
@@ -259,8 +276,8 @@ The same mechanism serves the app window and the D1 fallback tab, on every platf
    for `.html` files opens it; if that is not a browser, the launch shows *did not connect*.
 5. **Removal**: as in 4.2. On LibreOffice start and quit the launcher also deletes any
    `launch-*.html` in that folder older than 60 s.
-6. **Windows**: this section replaces R2(b) (the URL on Edge's command line) unless spike S3 shows
-   Edge cannot use a bootstrap file; only then does Windows app mode fall back to `--app=<url>`.
+6. **Windows**: this section replaces R2(b) (the URL on Edge's command line). In 0.5.0 Windows has
+   no app mode at all (owner decision D3 after S3): it always uses tab mode (4).
 
 S1 (macOS 27.2.1, Chrome 158 and Safari 27, both started cold) observed for this exact file:
 
@@ -307,8 +324,11 @@ Body `{"launch": "<43>"}`; no session header. 200:
  "limits": {"max_message": 8000}}
 ```
 
-- `bounds` is `null` in tab mode. `chat_label` is display-only (the first 8 hex digits of the
-  plugin's chat session id); the page never sends it back.
+- `bounds` is `null` in tab mode. `chat_label` is display-only: `lo-` followed by the first 8 hex
+  digits of the plugin's chat session id (`lo-<32 hex>`), always 11 characters matching
+  `^lo-[0-9a-f]{8}$`; the page never sends it back. The same form is used in 6.2 and 6.6.
+- A new session always starts a new chat (a new `lo-<32 hex>` id); a reconnected window does not
+  continue the previous conversation.
 - A newer session for the same `document_id` ends the older one (reason `replaced`).
 - Unknown, expired or purged code: 401 `launch_expired`, "This launch link was already used or
   has expired. Click Open Sidecar in LibreOffice again."
@@ -337,7 +357,8 @@ ends "Start a New chat to continue."), 429 `too_many`, 503 `plugin_inactive`, 50
 ### 6.4 `GET /api/turn?id=<turn>&seq=<n>&have=<n>` (cursor long-poll)
 
 - Query: exactly the keys `id`, `seq`, `have`, each once; `seq` and `have` are decimal integers
-  `0 <= n <= 200000`. `seq` is the last record version the page has; `have` is how many
+  `0 <= n <= 200000` without leading zeros (`^(0|[1-9][0-9]{0,5})$`); `seq=01` answers 400
+  `bad_request`. `seq` is the last record version the page has; `have` is how many
   characters of the reply text it holds.
 - The plugin answers **at once** when the record's `seq` is greater than the query's or the
   turn has ended; otherwise it parks the request for at most **25 s** and answers with the
@@ -357,6 +378,8 @@ ends "Start a New chat to continue."), 429 `too_many`, 503 `plugin_inactive`, 50
                              "message": "<sentence>" | null}}}
 ```
 
+- `hermes_state` is the last Runs API state the plugin observed for the run (display-only): the
+  Runs API state `started` is reported as `running`; any state not listed here is `null`.
 - `text` is the suffix `reply[have:]` (at most `MAX_REPLY` characters in total). In 0.5.0 (tier
   T1) the reply arrives whole when the turn completes; `activity` is always `[]` and is reserved
   for the T2 relay, which is out of 0.5.0.
@@ -436,7 +459,7 @@ Cache-Control: no-cache
 | --- | --- | --- |
 | `index.html` | yes | the page |
 | `app.js` | yes | first script in `<head>` (7.2) |
-| `omniaTheme.js` | yes | palette and appearance; *Auto* uses `host_scheme` from the exchange |
+| `omnia-theme.js` | yes | palette and appearance; *Auto* uses `host_scheme` from the exchange (the prototype's `omniaTheme.js`, renamed because the path rule above allows lower case only) |
 | `omnia-tokens.css`, `omnia-pane.css`, `taskpane.css` | yes | byte-identical to the pinned upstream files |
 | `sidecar-lo.css` | yes | LibreOffice-only additions |
 | `assets/icon.svg` | yes | brand mark and `<link rel="icon">` |
@@ -466,8 +489,14 @@ Cache-Control: no-cache
 - Replies are rendered only as `marked.parse(md, {async: false, breaks: true})` then
   `DOMPurify.sanitize` with `ALLOWED_TAGS` `p br strong em del code pre blockquote ul ol li h1 h2
   h3 h4 h5 h6 table thead tbody tr th td hr a`, `ALLOWED_ATTR` `href align start`,
-  `ALLOW_DATA_ATTR: false`, `ALLOW_ARIA_ATTR: false`, `ALLOWED_URI_REGEXP` `^(https?|mailto):`
-  and `RETURN_TRUSTED_TYPE: true` (R1, R19). Every `<a>` then becomes a non-navigating control
+  `ADD_URI_SAFE_ATTR: ["align", "start"]`, `ALLOW_DATA_ATTR: false`, `ALLOW_ARIA_ATTR: false`,
+  `ALLOWED_URI_REGEXP` `^(https?|mailto):` and `RETURN_TRUSTED_TYPE: true` (R1, R19).
+  `ADD_URI_SAFE_ATTR` is required: DOMPurify 3.4.12 tests every allowed attribute that is not
+  URI-safe against `ALLOWED_URI_REGEXP`, so without it `align="right"` and `start="3"` are
+  stripped and tables lose their alignment and ordered lists their numbering.
+- The page may (and the shipped page does) give marked an `html` renderer that shows raw HTML
+  written by the model as escaped text, keeping a bare `<br>` as a line break, before the
+  sanitizer runs. This keeps hostile markup away from even the sanitizer's inert parse. Every `<a>` then becomes a non-navigating control
   that shows the URL with a **Copy link** button; nothing in the page navigates or opens a window.
   No `<img>`; no HTML sink other than the DOMPurify Trusted Types policy; status and activity text
   use `textContent`.
@@ -526,9 +555,24 @@ supported there.
 | still `pending` after 20 s, or `expired` | "The Sidecar window did not connect. Your browser may be managed by your organization; see README ▸ Which browser." |
 | `double_use` | "Another program used this launch. Click Open Sidecar again." |
 | `window_live`, raise failed or tab mode | "Sidecar is already open. Switch to it from the Dock or taskbar." |
+| hello answered 401 or 404 without an error `code` (a 0.4.0 plugin: it checks its bearer token before the path and has no codes) | "Your Hermes plugin is older than this extension. Update atlas-sidecar-libreoffice in Hermes, then click Open Sidecar again." |
+| idle panel | "Open Sidecar to chat with Hermes about this document." |
+| before hello | "Checking Hermes…" |
+| no answer, or a broken connection | "Hermes did not answer on port <n>. Click Open Sidecar to try again." |
+| not macOS or Windows | "Sidecar windows are not supported on this system." |
+| no Calc, Writer or Impress document | "Sidecar opens for a Calc, Writer or Impress document." |
+| the browser could not be started | "Sidecar could not start the browser. Click Open Sidecar to try again." |
+| pairing token file unsafe, missing or invalid | "The pairing token file has unsafe permissions; restart LibreOffice." / "The pairing token is missing; restart LibreOffice." / "The pairing token is invalid; restart LibreOffice." |
+| a refusal the plugin signed (any other status) | the plugin's own `error` sentence, at most 300 characters |
 
-No automatic second attempt in another browser. A browser is spawned only from the panel button
-or the Tools menu command, after `/launcher/launch` answered 201.
+The older-plugin row is a plain version mismatch, not an impostor: nothing is sent after the
+hello and no window opens. A wrong proof from a program that does answer 200 is still the *not
+your Hermes* row.
+
+No automatic second attempt in another browser. A browser is spawned only from the panel's
+**Open Sidecar** button, after `/launcher/launch` answered 201 (and, for tests, from the
+`dev_open_sidecar` bridge operation, which exists only when LibreOffice runs with
+`HERMES_LO_DEV=1`). The Tools menu command **Open Sidecar chat** only shows the Sidecar panel.
 
 ### 8.3 Bounds (S2)
 
@@ -548,9 +592,9 @@ The launcher computes `bounds` from the client rectangle `F` and the work area `
 `width = 400`, `height = F.height`, `y = F.y`; `x = F.x + F.width` when
 `F.x + F.width + 400 <= A.x + A.width`, else `x = A.x + A.width - 400` (overlapping the frame's
 right side). It starts the browser with `--window-position=<x>,<y - G>` and
-`--window-size=<width>,<height + G>`, where `G` is the expected title bar (32 on macOS as measured;
-0 on Windows until S3 measures Edge), and the page corrects the remainder. Not yet verified: 2×
-displays, a second display, Windows scaling (G6, G7).
+`--window-size=<width>,<height + G>`, where `G` is the expected title bar (32 on macOS as measured),
+and the page corrects the remainder. Windows has no app mode in 0.5.0, so no bounds are sent
+there. Not yet verified: 2× displays and a second display (G6).
 
 ## 9. Error codes and user texts
 
@@ -591,6 +635,14 @@ displays, a second display, Windows scaling (G6, G7).
 | `idle` | "This window was idle too long. Click Open Sidecar in LibreOffice again." |
 | `double_use` | "This launch was used by another program; that connection was closed. Click Open Sidecar again." |
 | `evicted` | "Too many Sidecar windows are open, so this one was disconnected. Click Open Sidecar in LibreOffice again." |
+
+Chat readiness texts (`chat.reason`, written by the page):
+
+| `chat.reason` | Text |
+| --- | --- |
+| `plugin_inactive` | "Chat is off: the LibreOffice plugin is not active in Hermes. Enable it, restart the Hermes gateway, then click Open Sidecar in LibreOffice again." |
+| `no_api_key` | "Chat is off: Hermes's API server key is not available. Enable the API server, set API_SERVER_KEY, then click Open Sidecar in LibreOffice again." |
+| `bad_api_key` | "Chat is off: Hermes's API server key cannot be used. Set API_SERVER_KEY again, then click Open Sidecar in LibreOffice again." |
 
 Turn status line: `working` "Hermes is working…"; `stopping` "Stopping…"; `hermes_state`
 `waiting_for_approval`: "Hermes asked for an approval that Sidecar cannot give. Press Stop and
@@ -637,9 +689,18 @@ parallel static or poll requests stay below `MAX_HANDLERS` (16).
 | `TurnOutcome(kind, status, text)`, `TurnOutcome.KINDS`, `TurnOutcome.from_error(exc)` | outcome kinds of 6.4 |
 | `ChatError`, `ChatStopped`, `USER_STOPPED`, `OUTCOME_UNCERTAIN`, `PLUGIN_TURNED_OFF`, `TURN_WORKER_FAILED` | errors and texts |
 
-Lane A adds, in `chat_bridge.py` or its new modules: the last observed Runs API state on the run
-(for `hermes_state`), the long-poll wake-up on `close()` (R12), and the role gates of 1.2 on the
-legacy pair. `plugin/web_auth.py` (codes, sessions, channels; no sockets) and `plugin/web_api.py`
+Added in 0.5.0 (lane A), all no-ops for callers that do not use them:
+
+| Name | Use |
+| --- | --- |
+| `ChatBridge(..., web_routes=True)` | `start()` attaches `plugin/web_api.py` (routes, sessions, close hooks) once; `False` leaves the bridge as in 0.4.0 (the stub and tests attach it themselves) |
+| `ChatBridge.add_close_hook(begin, end)` | `begin()` runs when `close()` starts and must not block; `end(seconds_left)` runs just before `close()` returns, inside the same 10 s budget; both idempotent |
+| `ChatBridge.run_state_listener` | `callable(run)` or `None`; called (never under the lock) when a run's `hermes_state` changes |
+| `_Run.hermes_state` | the last observed Runs API state of a run, display-only (6.4 maps it) |
+| `BoundedHTTPServer.request_queue_size = 64` | listen backlog, so a burst of page requests is queued rather than refused |
+| `ChatBridge.request_stop(run)` | also wakes the thread following the run, which sends the stop to Hermes at once instead of at its next poll |
+
+The role gates of 1.2 also apply to the legacy pair. `plugin/web_auth.py` (codes, sessions, channels; no sockets) and `plugin/web_api.py`
 (routes, static files, turn records) register through `add_route_handler`.
 
 ### 13.2 Extension (`extension/python/`)
@@ -649,12 +710,16 @@ expose the same functions:
 
 | Function | Contract |
 | --- | --- |
-| `find_browsers() -> list[tuple[str, str]]` | `(name, executable)` in preference order (Chrome, Edge, Brave, Chromium on macOS; Edge, Chrome, Brave on Windows); fixed paths / `App Paths`, no LaunchServices |
+| `find_browsers() -> list[tuple[str, str]]` | `(name, executable)` in preference order (Chrome, Edge, Brave, Chromium on macOS, at fixed paths in `/Applications` and `~/Applications`, no LaunchServices); on Windows in 0.5.0 always `[]`, so the launcher uses tab mode |
 | `cache_dir() -> pathlib.Path` | the `<cache>` of section 5 |
-| `spawn(argv: list[str]) -> int` | starts the browser without a shell, cleaned environment, detached (`start_new_session` / `DETACHED_PROCESS`); returns the PID |
-| `open_default(path: pathlib.Path) -> None` | D1 tab mode (5.4) |
-| `raise_pid(pid: int) -> bool` | macOS: `NSRunningApplication` by PID, then activate; Windows: `AllowSetForegroundWindow`, the PID's visible top-level window, `SetForegroundWindow`; explicit `argtypes`, scalars only, main thread, off under `HERMES_LO_SIDECAR_NO_NATIVE=1`; False when it could not |
-| `terminate(pid: int) -> None` | ask the browser this instance spawned to quit |
+| `spawn(argv: list[str]) -> int` | macOS: starts the browser without a shell, cleaned environment, detached (`start_new_session`); returns the PID. Windows 0.5.0: never called (raises) |
+| `open_default(path: pathlib.Path) -> None` | D1 tab mode (5.4): macOS runs `/usr/bin/open <path>` (argument list, no shell, cleaned environment); Windows calls `os.startfile(<path>)`, which opens it with the default handler for `.html` files |
+| `raise_pid(pid: int) -> bool` | macOS: runs `/usr/bin/osascript -l JavaScript -e <fixed script> <pid>` (argument list, no shell, cleaned environment, 5 s timeout); the fixed JXA script calls `NSRunningApplication.runningApplicationWithProcessIdentifier(pid).activateWithOptions(1)`, so no native code is loaded into LibreOffice (R6). Off under `HERMES_LO_SIDECAR_NO_NATIVE=1`. Windows 0.5.0: always False (tab mode cannot be raised). False when it could not |
+| `terminate(pid: int) -> None` | macOS: SIGTERM to the browser this instance spawned (Chromium shuts down normally), waiting at most 3 s. Windows 0.5.0: nothing (the page closes itself on `host_gone`) |
+
+So the programs the extension starts are: the browser in app mode (macOS), `/usr/bin/osascript`
+(raise, macOS), `/usr/bin/open` (tab mode, macOS), and on Windows whatever program the `.html`
+file association names (normally the default browser). None goes through a shell.
 
 `sidecar_launcher.py` owns: `LauncherClient(port, read_token)` with `hello()`, `launch(document,
 host_scheme, mode, bounds)`, `status(launch_id)`, `release(document_id, reason)` (section 3 and
@@ -663,8 +728,32 @@ host_scheme, mode, bounds)`, `status(launch_id)`, `release(document_id, reason)`
 frozen flag list. `hermes_bridge.py` calls `sidecar_launcher.on_document_closed(document_id)`
 and `sidecar_launcher.on_terminate()`.
 
-## 14. What the spikes did not cover
+## 14. What the spikes did not cover, and notes for 0.5.1
 
-Edge and Brave (not installed on the test Mac), Firefox, Windows (S3 on the Windows test machine),
-Intel Macs, 2× and multi-display placement, a managed browser, and whether an existing Chrome
-instance with the same dedicated profile hands off correctly on a second click.
+Not covered by the spikes: Edge and Brave on macOS (not installed on the test Mac), Intel Macs,
+2× and multi-display placement, and a managed browser.
+
+Observed after the spikes (0.5.0 lanes and integration):
+
+- **macOS, Chrome 158 app window** (LibreOffice 26.8.2.2, disposable profile): open beside the
+  frame, a second click raising the same window through `osascript` (no second window), quit
+  ending the browser, a relaunch on the same dedicated profile showing no restore prompt.
+- **Windows tab mode with Firefox 160** (the default `.html` handler on the test machine, Windows
+  11): the launcher state machine (not LibreOffice) opened the bootstrap file through
+  `os.startfile`; the page exchanged its code (`Sec-Fetch-Site: same-origin`), no command line
+  carried the code or the bootstrap path, the second open answered `window_live`, and after
+  `host_quit` the page closed its own tab with `window.close()`.
+
+S3 findings kept for the Windows app window in 0.5.1 (not used in 0.5.0):
+
+- Edge signed a fresh `--user-data-dir` profile into the user's Microsoft account without a prompt,
+  also with `--disable-sync`, `--inprivate` and `--guest`; no flag prevented it.
+- Quitting the dedicated Edge instance started Edge's Startup Boost for the user's default profile
+  (`--no-startup-window`, parented to our browser), which kept running.
+- Edge reads `--window-size`/`--window-position` in DIPs: divide the UNO rectangle by
+  `(monitor DPI / 96) × (TextScaleFactor / 100)`; a second launch into a running instance ignores
+  the flags, so the page's own `resizeTo`/`moveTo` is the only way to place a second window.
+- Raise from a background process failed (`AllowSetForegroundWindow` and `SetForegroundWindow` both
+  refused, error 5); raising from a foreground LibreOffice was not observed. New windows did not
+  steal the foreground.
+- The bootstrap file works in Edge (no address bar, `history.length == 1`, `window.close()` works).
