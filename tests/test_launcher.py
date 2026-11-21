@@ -13,7 +13,7 @@ import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import secrets
 import socket
@@ -90,7 +90,7 @@ class FakePlugin:
         self.url_port = None
         self.released: list[dict] = []
         self.busy_paths: list[str] = []  # answered once each with the accept-thread busy refusal
-        self.busy_answer = {"ok": False, "code": "busy", "error": "the chat endpoint is busy; try again shortly"}
+        self.busy_answer = {"ok": False, "code": "endpoint_busy", "error": "the chat endpoint is busy; try again shortly"}
         self.trickle: dict[str, float] = {}  # path prefix -> seconds between answer bytes
         self.trickle_headers_fast = False
         plugin = self
@@ -392,7 +392,7 @@ class BoundsAndArgv(unittest.TestCase):
         self.assertEqual(L.window_geometry(bounds, "win32"), ((1240, 102), (400, 848)))
 
     def test_frozen_flag_list(self):
-        profile = Path("/cache/Sidecar for LibreOffice/browser")
+        profile = PurePosixPath("/cache/Sidecar for LibreOffice/browser")  # the macOS argv, on any test host
         argv = L.browser_argv("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", profile,
                               "file:///cache/Sidecar%20for%20LibreOffice/launch/launch-" + "0" * 32 + ".html",
                               (1240, 70), (400, 880), "darwin")
@@ -753,7 +753,10 @@ class BusyAnswers(unittest.TestCase):
 
     def test_the_busy_code_at_hello(self):
         self.assertEqual(L.BUSY, "Sidecar is busy, try again in a moment.")
+        self.assertEqual(self.hello_text({"ok": False, "code": "endpoint_busy", "error": "x"}), L.BUSY)
         self.assertEqual(self.hello_text({"ok": False, "code": "busy", "error": "x"}), L.BUSY)
+        self.assertEqual(self.hello_text({"ok": False, "code": "internal", "error": "x"}, current=True),
+                         L.NOT_YOURS.format(port=self.plugin.port))  # other coded 503s are unchanged
 
     def test_the_0_5_0_busy_sentence_without_a_code(self):
         self.assertEqual(self.hello_text({"ok": False, "error": "the chat endpoint is busy; try again shortly"}),

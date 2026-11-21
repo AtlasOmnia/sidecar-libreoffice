@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import ast
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import subprocess
 import sys
 import tempfile
@@ -49,6 +49,7 @@ class FindBrowsers(unittest.TestCase):
             ("Chromium", str(self.user / "Chromium.app/Contents/MacOS/Chromium")),
         ])
 
+    @unittest.skipIf(os.name == "nt", "POSIX execute bits (the macOS adapter runs only on macOS)")
     def test_system_applications_win_and_non_executables_are_skipped(self):
         make_executable(self.system / "Google Chrome.app/Contents/MacOS/Google Chrome")
         make_executable(self.user / "Google Chrome.app/Contents/MacOS/Google Chrome")
@@ -104,7 +105,7 @@ class Processes(unittest.TestCase):
 
     def test_open_default_uses_usr_bin_open(self):
         with mock.patch.object(M.subprocess, "run") as run:
-            M.open_default(Path("/c/launch-" + "0" * 32 + ".html"))
+            M.open_default(PurePosixPath("/c/launch-" + "0" * 32 + ".html"))  # a macOS path on any test host
         args, kwargs = run.call_args
         self.assertEqual(args, (["/usr/bin/open", "/c/launch-" + "0" * 32 + ".html"],))
         self.assertIs(kwargs["shell"], False)

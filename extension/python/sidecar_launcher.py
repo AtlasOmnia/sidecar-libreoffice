@@ -121,9 +121,9 @@ class LauncherBusy(LauncherError):
         super().__init__(BUSY)
 
 
-# The plugin's busy refusal: code ``busy`` (0.5.0 after fix round 1); the 0.5.0 endpoint first
-# answered it without a code but with this sentence.
-BUSY_CODE = "busy"
+# The plugin's busy refusal, sent before any handler runs: code ``endpoint_busy`` (``busy`` is
+# accepted too); the first 0.5.0 endpoint answered it without a code but with this sentence.
+BUSY_CODES = ("endpoint_busy", "busy")
 BUSY_SENTENCE = "the chat endpoint is busy; try again shortly"
 
 
@@ -133,7 +133,7 @@ def _busy(status: int, value: dict[str, Any], current: bool) -> bool:
     the older-plugin answer. It only chooses a panel text, never authorises anything."""
     if status != 503 or value.get("ok") is not False:
         return False
-    if value.get("code") == BUSY_CODE or value.get("error") == BUSY_SENTENCE:
+    if value.get("code") in BUSY_CODES or value.get("error") == BUSY_SENTENCE:
         return True
     return current and "code" not in value
 
