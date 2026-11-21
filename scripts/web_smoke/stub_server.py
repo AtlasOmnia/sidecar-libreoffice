@@ -196,7 +196,7 @@ def classify(target: str) -> Optional[tuple[str, str, str, str]]:
         return family, target, method, label
     if target == "/api/turn" or target.startswith("/api/turn?"):
         return "api", "/api/turn", "GET", "api-turn"
-    if target.startswith("/launcher/launch/") and "/" not in target[len("/launcher/launch/"):]:
+    if target.startswith("/launcher/launch/") and "?" not in target:   # a malformed id gets a signed 404
         return "launcher", "/launcher/launch/<id>", "GET", "launcher-status"
     if target.startswith("/ui/") and len(target) > 4:
         return "ui", "/ui/<file>", "GET", "ui-static"

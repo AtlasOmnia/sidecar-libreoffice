@@ -581,15 +581,14 @@ def _(c: Ctx) -> None:
     c.secrets.add(tok)
     c.check("exchanged after exchange", client.status(data["launch_id"]).json().get("state") == "exchanged", "exchanged", "?")
     c.expect("unknown launch id", client.status("B" * 22), 404, "not_found")
-    # A malformed id is not a /launcher/launch/<launch_id> path: 404 either as an unknown path (before
-    # the channel is checked, no MAC) or as an unknown id (MAC-signed). A wrong MAC is a failure.
+    # A malformed id is answered after the channel MAC is checked: a signed 404, like an unknown id (4.2).
     client = c.launcher()
     r = client.call("GET", "/launcher/launch/short", verify=False)
     macs = r.all("X-Sidecar-MAC")
     signed = len(macs) == 1 and hmac.compare_digest(macs[0], contract.response_mac(client.key, client.counter, r.status, r.body))
-    c.check("malformed launch id: 404 not_found, MAC absent or valid", r.status == 404 and r.code == "not_found"
-            and (not macs or signed), "404 not_found", f"{r.status} {r.code}, MAC {'valid' if signed else len(macs)}")
-    client = c.launcher()   # an unsigned answer leaves the channel's counter where it was: open a new one
+    c.check("malformed launch id: signed 404 not_found", r.status == 404 and r.code == "not_found" and signed,
+            "404 not_found, valid MAC", f"{r.status} {r.code}, MAC {'valid' if signed else len(macs)}")
+    client = c.launcher()
     for name, payload in (("doc with host_quit", {"document_id": "lo:test:1", "reason": "host_quit"}),
                           ("null with document_closed", {"document_id": None, "reason": "document_closed"}),
                           ("bad reason", {"document_id": "lo:test:1", "reason": "bye"})):
@@ -893,8 +892,8 @@ def _(c: Ctx) -> None:
               f"id={tid}&seq=0&have=1.0", "id=short&seq=0&have=0", f"id={tid}&seq=&have=0", ""):
         c.expect(f"query {q.replace(tid, '<id>') or '(none)'}", c.get(f"/api/turn?{q}" if q else "/api/turn", tok),
                  400, "bad_request")
-    lead = c.get(f"/api/turn?id={tid}&seq=01&have=0", tok)   # section 6.4 says "decimal integers" only
-    c.check("seq=01 (leading zero; the contract does not say)", True, "info", f"{lead.status} {lead.code or ''}".strip())
+    for q in (f"id={tid}&seq=01&have=0", f"id={tid}&seq=0&have=00"):   # 6.4: no leading zeros
+        c.expect(f"query {q.replace(tid, '<id>')} (leading zero)", c.get(f"/api/turn?{q}", tok), 400, "bad_request")
     c.expect("unknown turn id", c.poll(tok, "C" * 22, 0), 404, "unknown_turn")
     other, _ = c.session(2)
     c.expect("another session's turn", c.poll(other, tid, 0), 404, "unknown_turn")

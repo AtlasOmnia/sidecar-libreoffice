@@ -303,13 +303,15 @@ PROFILE_PROBE = r"""
   const html = window.marked.parse(md, {async: false, breaks: true});
   const contract = {ALLOWED_TAGS: ['p','br','strong','em','del','code','pre','blockquote','ul','ol','li','h1','h2','h3',
     'h4','h5','h6','table','thead','tbody','tr','th','td','hr','a'], ALLOWED_ATTR: ['href','align','start'],
-    ALLOW_DATA_ATTR: false, ALLOW_ARIA_ATTR: false, ALLOWED_URI_REGEXP: /^(?:https?|mailto):/i, RETURN_TRUSTED_TYPE: true};
+    ADD_URI_SAFE_ATTR: ['align', 'start'], ALLOW_DATA_ATTR: false, ALLOW_ARIA_ATTR: false,
+    ALLOWED_URI_REGEXP: /^(?:https?|mailto):/i, RETURN_TRUSTED_TYPE: true};
+  const without = Object.assign({}, contract); delete without.ADD_URI_SAFE_ATTR;
   const run = (cfg) => { const d = document.createElement('div'); d.innerHTML = window.DOMPurify.sanitize(html, cfg);
     return {align: Array.from(d.querySelectorAll('td')).map((td) => td.getAttribute('align')),
             start: (d.querySelector('ol') || {getAttribute: () => null}).getAttribute('start'),
             href: (d.querySelector('a') || {getAttribute: () => null}).getAttribute('href')}; };
   return {marked: (html.match(/<td[^>]*>/g) || []).slice(0, 3), contract: run(contract),
-          withUriSafe: run(Object.assign({}, contract, {ADD_URI_SAFE_ATTR: ['align', 'start']}))};
+          withoutUriSafe: run(without)};
 })()
 """
 
@@ -321,8 +323,9 @@ def _(b: BCtx) -> None:
     want = {"align": ["left", "right", "center"], "start": "3", "href": "https://example.invalid/p"}
     b.check("marked emits align attributes", r["marked"] == ['<td align="left">', '<td align="right">', '<td align="center">'],
             "align=left/right/center", r["marked"])
-    b.check("contract profile (exact 7.2 options) keeps align and start", r["contract"] == want, want, r["contract"])
-    b.check("same profile + ADD_URI_SAFE_ATTR ['align','start'] keeps them", r["withUriSafe"] == want, want, r["withUriSafe"])
+    b.check("contract profile (exact 7.2 options, with ADD_URI_SAFE_ATTR) keeps align and start", r["contract"] == want,
+            want, r["contract"])
+    b.check("info: without ADD_URI_SAFE_ATTR DOMPurify strips them", True, "info", r["withoutUriSafe"])
     if b.evidence is not None:
         (b.evidence / f"{b.tag}-sanitizer-profile.json").write_text(json.dumps(r, indent=1))
 
@@ -423,7 +426,7 @@ def _(b: BCtx) -> None:
           return d.contains(a) ? 'dialog' : 'outside:' + (a.id || a.tagName); })()"""))
     behind = [s for s in stops if s.startswith("outside:")]
     b.check("Tab never reaches page content behind the open dialog", behind == [], [], stops)
-    b.check("Tab wraps inside the dialog without a browser stop (info: native showModal leaves one)", True, "info",
+    b.check("Tab wraps inside the dialog without a browser stop", stops.count("browser") == 0, "12/12 in the dialog",
             f"{stops.count('dialog')}/12 in the dialog, {stops.count('browser')} browser stop(s)")
     page.key("Escape")
     b.check("Esc closes the dialog", page.wait_for("!document.getElementById('settings-dialog').open", 3), True, False)

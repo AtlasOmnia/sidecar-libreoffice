@@ -74,7 +74,7 @@
     const strict = {
       ALLOWED_TAGS: ["p", "br", "strong", "em", "del", "code", "pre", "blockquote", "ul", "ol", "li", "h1", "h2",
         "h3", "h4", "h5", "h6", "table", "thead", "tbody", "tr", "th", "td", "hr", "a"],
-      ALLOWED_ATTR: ["href", "align", "start"], ALLOW_DATA_ATTR: false, ALLOW_ARIA_ATTR: false,
+      ALLOWED_ATTR: ["href", "align", "start"], ADD_URI_SAFE_ATTR: ["align", "start"], ALLOW_DATA_ATTR: false, ALLOW_ARIA_ATTR: false,
       ALLOWED_URI_REGEXP: /^(?:https?|mailto):/i, RETURN_TRUSTED_TYPE: true,
     };
     const clean = window.DOMPurify.sanitize(html, STRICT_PROFILE ? strict : { RETURN_TRUSTED_TYPE: true });
