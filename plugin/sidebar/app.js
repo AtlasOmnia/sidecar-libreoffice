@@ -751,6 +751,19 @@
         ? doc.title + (HOSTS[doc.type] ? " (" + HOSTS[doc.type].app + ")" : "") : "none");
       byId("settings-dialog").showModal();
     });
+    // Keep Tab inside the open dialog: native showModal() would otherwise leave one stop on the
+    // browser's own controls between the last and the first button (G5).
+    byId("settings-dialog").addEventListener("keydown", function (event) {
+      if (event.key !== "Tab") return;
+      var first = byId("close-settings-button"), last = byId("save-settings-button");
+      if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      }
+    });
     window.addEventListener("focus", pollState);
     document.addEventListener("visibilitychange", pollState);
     window.addEventListener("pagehide", closeSessionOnExit);
