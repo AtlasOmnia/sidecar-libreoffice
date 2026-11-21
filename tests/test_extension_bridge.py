@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import logging
 import os
+import socket
 from pathlib import Path
 import stat
 import sys
@@ -12,6 +13,7 @@ import tempfile
 import threading
 import types
 import unittest
+import unittest.mock
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -411,6 +413,57 @@ class BridgeLogicTests(unittest.TestCase):
             runtime.undo({"document_id": writer_id})
         self.assertEqual(nothing.exception.category, "NotFound")
         self.assertEqual(nothing.exception.state, "not_started")
+
+
+class ExclusiveListener(unittest.TestCase):
+    """On Windows SO_REUSEADDR lets another socket (even another account's) bind the
+    bridge's address and port while it listens. The listener must use SO_EXCLUSIVEADDRUSE there."""
+
+    class Recorder:
+        def __init__(self):
+            self.options = []
+
+        def setsockopt(self, level, name, value):
+            self.options.append((level, name, value))
+
+        def bind(self, address):
+            self.bound = address
+
+        def getsockname(self):
+            return ("127.0.0.1", 1)
+
+    def bind_as(self, windows):
+        server = BRIDGE.BoundedHTTPServer.__new__(BRIDGE.BoundedHTTPServer)
+        server.socket = self.Recorder()
+        server.server_address = ("127.0.0.1", 0)
+        exclusive = getattr(BRIDGE.socket, "SO_EXCLUSIVEADDRUSE", -5)
+        with unittest.mock.patch.object(BRIDGE, "_WINDOWS", windows, create=True), \
+                unittest.mock.patch.object(BRIDGE.socket, "SO_EXCLUSIVEADDRUSE", exclusive, create=True):
+            server.server_bind()
+        return server.socket.options, exclusive
+
+    def test_windows_binds_exclusively_without_reuse(self):
+        options, exclusive = self.bind_as(True)
+        names = [name for _level, name, _value in options]
+        self.assertIn(exclusive, names)
+        self.assertNotIn(BRIDGE.socket.SO_REUSEADDR, names)
+
+    def test_other_systems_keep_the_stdlib_reuse(self):
+        options, exclusive = self.bind_as(False)
+        names = [name for _level, name, _value in options]
+        self.assertNotIn(exclusive, names)
+        self.assertIn(BRIDGE.socket.SO_REUSEADDR, names)
+
+    def test_a_second_socket_cannot_bind_the_listening_port(self):
+        runtime = types.SimpleNamespace(token="t" * 43, port=0, logger=logging.getLogger("test-bridge"),
+                                        invoke=lambda op, args: {})
+        server = BRIDGE.make_server(runtime, 0)
+        self.addCleanup(server.server_close)
+        port = server.server_address[1]
+        with socket.socket() as other:
+            other.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            with self.assertRaises(OSError):
+                other.bind(("127.0.0.1", port))
 
 
 if __name__ == "__main__":
