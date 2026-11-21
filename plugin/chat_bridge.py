@@ -268,6 +268,19 @@ class BoundedHTTPServer(ThreadingHTTPServer):
 
     daemon_threads = True
 
+    @property
+    def allow_reuse_address(self) -> bool:   # type: ignore[override]
+        # On Windows SO_REUSEADDR lets a socket of another user account bind the same address
+        # and port while this listener is up; there the port is bound exclusively instead
+        # (server_bind). Elsewhere SO_REUSEADDR only allows a restart over TIME_WAIT
+        # connections: a second bind to the same address and port still fails.
+        return not _WINDOWS
+
+    def server_bind(self) -> None:
+        if _WINDOWS:
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)  # type: ignore[attr-defined]
+        super().server_bind()
+
     def __init__(self, address: tuple[str, int], handler: type, *, max_handlers: int, refusal: bytes) -> None:
         self._slots = threading.BoundedSemaphore(max_handlers)
         self._refusal = refusal

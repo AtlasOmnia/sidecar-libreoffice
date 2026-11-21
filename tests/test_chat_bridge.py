@@ -9,6 +9,7 @@ A loopback fake stands in for the Hermes API server's documented Runs API (``POS
 from __future__ import annotations
 
 import http.client
+import http.server
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
@@ -337,6 +338,64 @@ class ClientSideTests(unittest.TestCase):
     def test_endpoint_only_forwards_to_loopback(self):
         with self.assertRaises(ValueError):
             chat_bridge.ChatBridge(port=0, token=lambda: TOKEN, api_key=lambda: API_KEY, api_host="example.com")
+
+
+class ListenerBindTests(unittest.TestCase):
+    """The chat listener's address and port cannot be shared: on Windows it is bound with
+    SO_EXCLUSIVEADDRUSE and without SO_REUSEADDR, which there would let a socket of another user
+    account bind the same address and port while the listener is up; elsewhere SO_REUSEADDR stays
+    (it only allows a restart over TIME_WAIT connections)."""
+
+    def listener(self):
+        server = chat_bridge.BoundedHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler,
+                                               max_handlers=1, refusal=b"")
+        self.addCleanup(server.server_close)
+        return server
+
+    def test_the_options_chosen_for_each_system(self):
+        class FakeSocket:
+            def __init__(self):
+                self.options = []
+
+            def setsockopt(self, level, name, value):
+                self.options.append((level, name, value))
+
+        exclusive = getattr(chat_bridge.socket, "SO_EXCLUSIVEADDRUSE", -5)
+        for windows in (True, False):
+            with self.subTest(windows=windows), mock.patch.object(chat_bridge, "_WINDOWS", windows), \
+                    mock.patch.object(chat_bridge.socket, "SO_EXCLUSIVEADDRUSE", exclusive, create=True), \
+                    mock.patch.object(http.server.HTTPServer, "server_bind") as base_bind:
+                server = chat_bridge.BoundedHTTPServer.__new__(chat_bridge.BoundedHTTPServer)
+                server.socket = FakeSocket()
+                chat_bridge.BoundedHTTPServer.server_bind(server)
+                base_bind.assert_called_once()
+                if windows:
+                    self.assertEqual(server.socket.options, [(chat_bridge.socket.SOL_SOCKET, exclusive, 1)])
+                    self.assertFalse(server.allow_reuse_address, "no SO_REUSEADDR on Windows")
+                else:
+                    self.assertEqual(server.socket.options, [])
+                    self.assertTrue(server.allow_reuse_address)
+
+    def test_the_real_listener_has_the_options_for_this_system(self):
+        server = self.listener()
+        sock = server.socket
+        reuse = sock.getsockopt(chat_bridge.socket.SOL_SOCKET, chat_bridge.socket.SO_REUSEADDR)
+        if sys.platform == "win32":
+            self.assertNotEqual(sock.getsockopt(chat_bridge.socket.SOL_SOCKET,
+                                                chat_bridge.socket.SO_EXCLUSIVEADDRUSE), 0)
+            self.assertEqual(reuse, 0)
+        else:
+            self.assertNotEqual(reuse, 0)
+
+    def test_a_second_socket_cannot_bind_the_listening_address_and_port(self):
+        # On Windows before the fix both sockets carried SO_REUSEADDR and this bind succeeded.
+        server = self.listener()
+        port = server.server_address[1]
+        other = chat_bridge.socket.socket(chat_bridge.socket.AF_INET, chat_bridge.socket.SOCK_STREAM)
+        self.addCleanup(other.close)
+        other.setsockopt(chat_bridge.socket.SOL_SOCKET, chat_bridge.socket.SO_REUSEADDR, 1)
+        with self.assertRaises(OSError):
+            other.bind(("127.0.0.1", port))
 
 
 if __name__ == "__main__":
