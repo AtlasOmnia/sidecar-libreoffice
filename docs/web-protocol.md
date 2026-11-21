@@ -37,10 +37,10 @@ no longer current is refused with the new code `already_sent` (6.3, 9.1); the pa
 that a Send did not arrive, ignores state answers older than a Send or New chat, keeps Send and
 New chat off while a Send is undecided and offers Try again with the same `send_id` (6.3, 6.6,
 7.2); a user Stop's thread is registered before it starts, its whole call has one deadline, and
-unload cuts it off and joins it; unload asks known runs to stop before it waits for the listener,
-which it ends at once and waits for within the budget (6.5, 13.1); the Windows exclusive bind
-covers 127.0.0.1 on the port, not every address (1); a non-ASCII path is 404 before any MAC (3.2);
-the busy refusal is best effort (12).
+unload cuts it off and waits for it within one shared cut-off; unload asks known runs to stop
+before it waits for the listener, which it ends at once and waits for within the budget (6.5,
+13.1); the Windows exclusive bind covers 127.0.0.1 on the port, not every address (1); a
+non-ASCII path is 404 before any MAC (3.2); the busy refusal is best effort (12).
 Labels such as R18, D1 or S1 are the requirement, owner-decision and spike numbers of the 0.5.0
 design review; the spike results that fixed a detail are quoted where they apply.
 
@@ -516,11 +516,21 @@ before the thread starts; the whole request (connect, send, status line, headers
 deadline, 10 s or the unload budget's end, whichever is first, re-read before every send and
 read (an answer trickled byte by byte does not extend it); unload cuts it off (nothing more is
 connected or sent on it; the socket it reads from is shut down even after `http.client` dropped
-it for `Connection: close`) and joins the thread, waiting at most 0.25 s past the budget for a
-cut-off thread to end. The stop of a run already seen to settle does not hold unload up. One stop per run is in flight at a time.
-The worker driving the run alone settles and releases it and reports outcome `user` (a stop's
-acknowledgement alone releases nothing; a run Hermes reports completed before the stop took
-effect still reports what Hermes reported). 202 with the turn view (state `stopping`), or 200
+it for `Connection: close`). Unload then waits for all user Stop threads together until ONE
+cut-off, 0.25 s after the cut-off and so at most 0.25 s past the budget (not 0.25 s per
+thread), and joins only threads that have started. A thread registered but not started yet, or
+still inside an operating-system connect (which cannot be interrupted), is left behind and
+logged; when it goes on it connects or sends nothing. So unload guarantees no Stop payload after
+the cut-off, not that every Stop thread has ended. The stop of a run already seen to settle holds
+unload up for that grace at most, whatever the budget. On an asyncio event-loop thread unload
+cannot wait (13.1): it returns at once, the Stop threads are not waited for, and they are cut off
+only when the budget ends, so until then a Stop that has not connected yet can still be sent after
+unload returned. One stop per run is in flight at a time.
+Only an observed settled state releases an admitted run, once, through the same ownership
+check: the worker driving the run reports outcome `user` when it sees the run settle; when no
+worker drives an unresolved run any more, a settled answer to its stop releases it. A stop's
+acknowledgement alone releases nothing, and a run Hermes reports completed before the stop took
+effect still reports what Hermes reported. 202 with the turn view (state `stopping`), or 200
 with the final view when the turn already ended. 404 `unknown_turn`.
 
 ### 6.6 `POST /api/new-chat`
@@ -834,7 +844,7 @@ an older plugin.
 | `ChatBridge.begin_turn(session_id, content, on_done) -> run` | `_claim` now (raises 409/429/503), then one worker runs `_drive`; `on_done(run, TurnOutcome)` once |
 | `ChatBridge.request_stop(run) -> bool` | user Stop and *window gone*: sets `stop_requested` and sends the stop at once when the run id is known (6.5); False when already settled |
 | `ChatBridge.session_state(session_id)` | `"driven"`, `"unresolved"` or `None` (New chat rule) |
-| `ChatBridge.owned_runs()`, `.closed`, `.close()` | unchanged signatures; `close()` (revision 4) closes ingress, ends the web sessions, starts the stop threads for known runs, then ends the listener (`BoundedHTTPServer.stop_serving`, which wakes the accept loop at once and waits at most what is left of the budget), waits for the runs and user Stops, and finally cuts off every status poll and user Stop still in flight and joins the user Stop threads |
+| `ChatBridge.owned_runs()`, `.closed`, `.close()` | unchanged signatures; `close()` (revision 4) closes ingress, ends the web sessions, starts the stop threads for known runs, then ends the listener (`BoundedHTTPServer.stop_serving(timeout)`, whose deadline is taken when it is called: it wakes the accept loop with a non-blocking loopback connection, which takes none of that time, and waits only for what is left; close() passes what is left of its budget, 0 on an event loop, where nothing blocks), waits for the runs and user Stops, and finally cuts off every status poll and user Stop still in flight and waits for the user Stop threads until one cut-off 0.25 s later, joining only those that have started (6.5); on an event-loop thread it returns at once, the cut-off comes when the budget ends and the threads are not waited for |
 | `compose_message(message, document)`, `SESSION_RE`, `MAX_MESSAGE`, `MAX_REPLY`, `MAX_ACTIVE` | unchanged |
 | `TurnOutcome(kind, status, text)`, `TurnOutcome.KINDS`, `TurnOutcome.from_error(exc)` | outcome kinds of 6.4 |
 | `ChatError`, `ChatStopped`, `USER_STOPPED`, `OUTCOME_UNCERTAIN`, `PLUGIN_TURNED_OFF`, `TURN_WORKER_FAILED` | errors and texts |
