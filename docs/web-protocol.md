@@ -33,7 +33,7 @@ listener binds its port exclusively too (1). Revision 2 callers keep working: a 
 **Revision 4 (fix round 2 of the 0.5.0 review)**: one `send_id` starts at most one run: a
 request that repeats a Send still being admitted waits for that admission and answers with the
 same turn, the reservation and the published turn change in one step, and an id whose turn is
-no longer current is refused with the new code `already_sent` (6.3, 9.1); the page never concludes
+no longer current (of the last 64 kept) is refused with the new code `already_sent` (6.3, 9.1); the page never concludes
 that a Send did not arrive, ignores state answers older than a Send or New chat, keeps Send and
 New chat off while a Send is undecided and offers Try again with the same `send_id` (6.3, 6.6,
 7.2); a user Stop's thread is registered before it starts, its whole call has one deadline, and
@@ -455,9 +455,11 @@ records nothing: the same `send_id` may be sent again. The page:
   same request once more. Only that Send's own turn decides it: a state answer whose turn has
   this `send_id` is followed (7.2); a state answer without it proves nothing (the first request
   may still be in admission, or the answer may have left the plugin before the request arrived)
-  and the page never says the message did not arrive. A refusal of the same `send_id` (other
-  than `busy` and `endpoint_busy`) decides it as not started (the message goes back to the input
-  box); `already_sent` decides it as sent earlier;
+  and the page never says the message did not arrive. A refusal of the same `send_id` decides
+  it as not started (the message goes back to the input box), except `endpoint_busy` (nothing was
+  read) and a `busy` answered to a retry (the first request may still be in admission), which
+  leave it undecided; a `busy` answered to the first request is a refusal, because nothing of
+  that Send can be in admission yet. `already_sent` decides it as sent earlier;
 - ignores a state answer to a request sent before the latest Send or New chat began.
 
 ### 6.4 `GET /api/turn?id=<turn>&seq=<n>&have=<n>` (cursor long-poll)
@@ -522,10 +524,12 @@ thread), and joins only threads that have started. A thread registered but not s
 still inside an operating-system connect (which cannot be interrupted), is left behind and
 logged; when it goes on it connects or sends nothing. So unload guarantees no Stop payload after
 the cut-off, not that every Stop thread has ended. The stop of a run already seen to settle holds
-unload up for that grace at most, whatever the budget. On an asyncio event-loop thread unload
-cannot wait (13.1): it returns at once, the Stop threads are not waited for, and they are cut off
-only when the budget ends, so until then a Stop that has not connected yet can still be sent after
-unload returned. One stop per run is in flight at a time.
+unload up for that grace at most, whatever the budget. These limits are the waits the plugin
+allocates, not a real-time bound: the operating system can return from a wait a little late.
+On an asyncio event-loop thread unload cannot wait (13.1): it returns at once, the Stop threads
+are not waited for, and they are cut off only when the budget ends, so until then a Stop that
+has not connected yet can still be sent after unload returned. One stop per run is in flight
+at a time.
 Only an observed settled state releases an admitted run, once, through the same ownership
 check: the worker driving the run reports outcome `user` when it sees the run settle; when no
 worker drives an unresolved run any more, a settled answer to its stop releases it. A stop's
@@ -539,8 +543,9 @@ Body `{}`. Refused with 409 `turn_running` ("Wait for the reply, or press Stop f
 session's run is **driven** (`ChatBridge.session_state(...) == "driven"`) or a Send is being
 admitted. The page sends New chat only with no turn, no Send in flight and no undecided Send,
 sends no Send while it waits for the answer, and ignores state answers to requests sent before
-New chat was answered (revision 4). With an unresolved run
-it is allowed: the session gets a new `lo-<32 hex>` id from the same generator, the old run stays
+New chat was answered (revision 4). This orders New chat within one page; it is not a
+transaction across a lost or delayed request. With an unresolved run it is allowed: the session
+gets a new `lo-<32 hex>` id from the same generator, the old run stays
 owned under the old id (it still counts against `MAX_ACTIVE`). 200 `{"ok": true, "chat_label": "…"}`.
 
 ### 6.7 `POST /api/session/close`
@@ -844,7 +849,7 @@ an older plugin.
 | `ChatBridge.begin_turn(session_id, content, on_done) -> run` | `_claim` now (raises 409/429/503), then one worker runs `_drive`; `on_done(run, TurnOutcome)` once |
 | `ChatBridge.request_stop(run) -> bool` | user Stop and *window gone*: sets `stop_requested` and sends the stop at once when the run id is known (6.5); False when already settled |
 | `ChatBridge.session_state(session_id)` | `"driven"`, `"unresolved"` or `None` (New chat rule) |
-| `ChatBridge.owned_runs()`, `.closed`, `.close()` | unchanged signatures; `close()` (revision 4) closes ingress, ends the web sessions, starts the stop threads for known runs, then ends the listener (`BoundedHTTPServer.stop_serving(timeout)`, whose deadline is taken when it is called: it wakes the accept loop with a non-blocking loopback connection, which takes none of that time, and waits only for what is left; close() passes what is left of its budget, 0 on an event loop, where nothing blocks), waits for the runs and user Stops, and finally cuts off every status poll and user Stop still in flight and waits for the user Stop threads until one cut-off 0.25 s later, joining only those that have started (6.5); on an event-loop thread it returns at once, the cut-off comes when the budget ends and the threads are not waited for |
+| `ChatBridge.owned_runs()`, `.closed`, `.close()` | unchanged signatures; `close()` (revision 4) closes ingress, ends the web sessions, starts the stop threads for known runs, then ends the listener (`BoundedHTTPServer.stop_serving(timeout)`, whose deadline is taken when it is called: it wakes the accept loop with a non-blocking loopback connection, which adds no blocking connect wait, and the following wait uses the remaining deadline; close() passes what is left of its budget, 0 on an event loop, where nothing blocks), waits for the runs and user Stops, and finally cuts off every status poll and user Stop still in flight and waits for the user Stop threads until one cut-off 0.25 s later, joining only those that have started (6.5); on an event-loop thread it returns at once, the cut-off comes when the budget ends and the threads are not waited for |
 | `compose_message(message, document)`, `SESSION_RE`, `MAX_MESSAGE`, `MAX_REPLY`, `MAX_ACTIVE` | unchanged |
 | `TurnOutcome(kind, status, text)`, `TurnOutcome.KINDS`, `TurnOutcome.from_error(exc)` | outcome kinds of 6.4 |
 | `ChatError`, `ChatStopped`, `USER_STOPPED`, `OUTCOME_UNCERTAIN`, `PLUGIN_TURNED_OFF`, `TURN_WORKER_FAILED` | errors and texts |
