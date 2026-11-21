@@ -491,7 +491,7 @@ def _(c: Ctx) -> None:
     c.expect("MAC for another path", c.req("GET", status_path, method_swap), 401, "launcher_auth")
 
 
-@probe("g1.r18.limits", "G1", "Channel limits: 64 calls, 16 live channels (oldest dropped), 120 s life")
+@probe("g1.r18.limits", "G1", "Channel limits: 64 calls, 16 unused + 16 used channels (a hello drops only an unused one), 120 s life")
 def _(c: Ctx) -> None:
     status_path = "/launcher/launch/" + "A" * 22
     client = c.launcher()
@@ -499,10 +499,14 @@ def _(c: Ctx) -> None:
     codes = [client.status("A" * 22).status for _ in range(calls)]
     c.check(f"{calls} calls accepted", codes == [404] * calls, f"{calls} x 404", sorted(set(codes)))
     c.expect(f"call {calls + 1} refused", _signed(c, client, "GET", status_path, b"", calls + 1), 401, "launcher_auth")
+    used = c.launcher()
+    c.expect("a channel in use (one MAC-verified call)", used.status("A" * 22), 404, "not_found")
     first = c.launcher()
     others = [c.launcher() for _ in range(int(c.t.timing["max_channels"]))]
-    c.expect("the oldest of 17 channels was dropped", _signed(c, first, "GET", status_path, b"", 1), 401, "launcher_auth")
+    c.expect("the oldest unused of 18 channels was dropped", _signed(c, first, "GET", status_path, b"", 1), 401,
+             "launcher_auth")
     c.expect("the newest channel works", others[-1].status("A" * 22), 404, "not_found")
+    c.expect("the channel in use survived 17 hellos (revision 3, 3.1)", used.status("A" * 22), 404, "not_found")
     ttl = c.t.timing["channel_ttl"]
     c.wait_seconds("channel life", ttl + 1)
     aged = c.launcher()
@@ -863,8 +867,10 @@ def _(c: Ctx) -> None:
     resp = c.chat(tok, "summary please [md]")
     c.expect("chat", resp, 202)
     turn = resp.json()["turn"]
-    c.check("turn view keys", set(turn) == {"id", "seq", "state", "hermes_state", "text_length", "activity", "outcome"}
-            and contract.ID22_RE.fullmatch(turn["id"]) is not None and turn["state"] == "working", "section 6.4", turn)
+    c.check("turn view keys", set(turn) == {"id", "seq", "state", "hermes_state", "send_id", "text_length", "activity",
+                                            "outcome"}
+            and contract.ID22_RE.fullmatch(turn["id"]) is not None and turn["state"] == "working"
+            and turn["send_id"] is None, "section 6.4 (revision 3: send_id)", turn)
     done = c.until_done(tok, turn)
     c.check("completed outcome", done["outcome"] == {"kind": "completed", "message": None}, "completed", done["outcome"])
     c.check("reply text is the Markdown reply", done["text_all"] == corpus.MARKDOWN_REPLY, len(corpus.MARKDOWN_REPLY),
@@ -881,6 +887,33 @@ def _(c: Ctx) -> None:
     turn2 = c.chat(tok, "again").json()["turn"]
     c.expect("a new message clears the previous turn record", c.poll(tok, turn["id"], 0, 0), 404, "unknown_turn")
     c.until_done(tok, turn2)
+
+
+@probe("g2.send.idempotent", "G2", "/api/chat with a send_id: a retry answers with the same turn and starts no run",
+       needs=("fake",))
+def _(c: Ctx) -> None:
+    tok, _ = c.session()
+    body = {"message": "summary please [md]", "send_id": "S" * 22}
+    first = c.post("/api/chat", body, tok)
+    c.expect("first send", first, 202)
+    turn = first.json()["turn"]
+    c.check("the turn names its send_id", turn.get("send_id") == "S" * 22 and first.json().get("replayed") is False,
+            "S*22, replayed false", {"send_id": turn.get("send_id"), "replayed": first.json().get("replayed")})
+    again = c.post("/api/chat", body, tok)
+    c.expect("the same send again (its answer was lost)", again, 200)
+    c.check("answered with the same turn, replayed", again.json().get("replayed") is True
+            and again.json()["turn"]["id"] == turn["id"], turn["id"], again.json().get("turn", {}).get("id"))
+    c.until_done(tok, turn)
+    late = c.post("/api/chat", body, tok)
+    c.check("a retry after the end gets the ended turn", late.status == 200 and late.json()["turn"]["state"] == "done",
+            "200 done", late.status)
+    with c.t.fake.lock:
+        creates = sum(1 for call in c.t.fake.calls if call["kind"] == "create")
+    c.check("one run created for one send_id", creates == 1, 1, creates)
+    c.expect("the same send_id with another message", c.post("/api/chat", {"message": "other", "send_id": "S" * 22}, tok),
+             400, "bad_request")
+    c.expect("a send_id that is not 22 base64url characters", c.post("/api/chat", {"message": "x", "send_id": "short"},
+                                                                     tok), 400, "bad_request")
 
 
 @probe("g2.turn.query", "G2", "/api/turn query: exactly id, seq, have; bounded integers; unknown turn 404")

@@ -103,15 +103,22 @@ def response_mac(key: bytes, counter: int, status: int, body: bytes) -> str:
 
 
 class Channel:
-    __slots__ = ("nonce", "key", "next_counter", "calls", "expires")
+    __slots__ = ("nonce", "key", "next_counter", "calls", "expires", "last_call")
 
     def __init__(self, nonce: str, key: bytes, expires: float) -> None:
         self.nonce, self.key, self.next_counter, self.calls, self.expires = nonce, key, 1, 0, expires
+        self.last_call = 0.0   # when its last MAC-verified call arrived (0 before the first)
 
 
 class Channels:
-    """Live launcher channels by server nonce (at most ``MAX_CHANNELS``; a new hello drops the
-    oldest). A nonce opens exactly one channel and is never reissued."""
+    """Live launcher channels by server nonce. A nonce opens exactly one channel and is never
+    reissued.
+
+    Two pools of at most ``MAX_CHANNELS`` each. Hello needs no credential, so a new hello only
+    ever displaces a channel that has not been used yet (no MAC-verified call), the oldest such
+    first. A channel's first MAC-verified call (which needs the pairing token) moves it to the
+    used pool, and only that can displace a used channel, the least recently called first. So
+    unauthenticated hellos never end a channel whose launcher is working with it."""
 
     def __init__(self, clock: Callable[[], float]) -> None:
         self._clock = clock
@@ -123,11 +130,12 @@ class Channels:
     def open(self, token_key: bytes, port: int, client_nonce: str) -> tuple[str, str]:
         """-> ``(server_nonce, server_proof)``."""
         self.expire()
+        unused = [nonce for nonce, channel in self._live.items() if channel.calls == 0]
+        for nonce in unused[:max(0, len(unused) - MAX_CHANNELS + 1)]:   # the oldest unused ones
+            del self._live[nonce]
         server_nonce = new_token()
         while server_nonce in self._live:   # 256-bit random: never in practice
             server_nonce = new_token()
-        while len(self._live) >= MAX_CHANNELS:
-            self._live.popitem(last=False)
         self._live[server_nonce] = Channel(server_nonce, channel_key(token_key, port, client_nonce, server_nonce),
                                            self._clock() + CHANNEL_SECONDS)
         return server_nonce, hello_proof(token_key, port, client_nonce, server_nonce)
@@ -158,6 +166,11 @@ class Channels:
         counter = channel.next_counter
         channel.next_counter += 1
         channel.calls += 1
+        channel.last_call = self._clock()
+        if channel.calls == 1:   # it joins the used pool: a verified call may displace a used channel
+            used = [other for other in self._live.values() if other.calls > 0 and other is not channel]
+            if len(used) >= MAX_CHANNELS:
+                del self._live[min(used, key=lambda other: other.last_call).nonce]
         return channel.key, counter
 
     def expire(self) -> None:

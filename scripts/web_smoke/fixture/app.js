@@ -144,21 +144,51 @@
     }, () => setTimeout(followTurn, 1000));
   }
 
+  // Contract revision 3 (6.3, 7.2): one send_id per Send, the same id on a retry of a lost answer;
+  // a turn the state poll reports that this window has not followed is followed, also when ended.
+  const seen = new Set();
+  let pending = null;
+  function startTurn(view) {
+    seen.add(view.id);
+    pending = null;
+    turn = { id: view.id, seq: view.seq || 0, text: "" };
+    setWorking(true);
+    setStatus(turnStatus(view));
+    followTurn();
+  }
+  function newSendId() {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+  function deliver(p) {
+    if (pending !== p || !session) return;
+    p.tries += 1;
+    api("POST", "/api/chat", { message: p.message, send_id: p.id }).then((res) => {
+      if (handleAuth(res) || pending !== p) return;
+      if ((res.status === 202 || res.status === 200) && res.data.turn) { startTurn(res.data.turn); return; }
+      if ((res.data.code === "endpoint_busy" || (res.data.code === "busy" && p.tries > 1)) && p.tries < 3) {
+        setTimeout(() => deliver(p), 1000);
+        return;
+      }
+      pending = null;
+      addMessage("assistant notice").textContent = res.data.error;
+    }, () => {
+      if (pending !== p) return;
+      if (p.tries < 3) { setTimeout(() => deliver(p), 1000); return; }
+      p.unknown = true;   // the state poll decides
+      addMessage("assistant notice").textContent = "It is not known whether Hermes received this message.";
+    });
+  }
   function send() {
     const input = $("prompt-input");
     const message = input.value;
-    if (!session || turn || !message.trim()) return;
-    api("POST", "/api/chat", { message }).then((res) => {
-      if (handleAuth(res)) return;
-      if (res.status !== 202) { addMessage("assistant notice").textContent = res.data.error; return; }
-      addMessage("user").textContent = message;
-      input.value = "";
-      turn = { id: res.data.turn.id, seq: res.data.turn.seq, text: "" };
-      setWorking(true);
-      setStatus(turnStatus(res.data.turn));
-      input.focus();
-      followTurn();
-    });
+    if (!session || turn || pending || !message.trim()) return;
+    addMessage("user").textContent = message;
+    input.value = "";
+    input.focus();
+    pending = { id: newSendId(), message, tries: 0, unknown: false };
+    deliver(pending);
   }
 
   function stop() {
@@ -174,10 +204,11 @@
     $("bridge-session-id").textContent = data.chat_label || "";
     $("bridge-status").textContent = data.chat.ready ? "LibreOffice connected" : "Chat unavailable: " + data.chat.reason;
     if (!turn) setStatus(data.chat.ready ? "Ready" : "Chat is not ready (" + data.chat.reason + ")");
-    if (data.turn && !turn && data.turn.state !== "done") {
-      turn = { id: data.turn.id, seq: 0, text: "" };
-      setWorking(true);
-      followTurn();
+    if (data.turn && !turn && !seen.has(data.turn.id) && (!pending || pending.unknown)) {
+      startTurn(Object.assign({}, data.turn, { seq: 0 }));
+    } else if (pending && pending.unknown) {
+      pending = null;
+      addMessage("assistant notice").textContent = "Your message did not reach Hermes. Send it again.";
     }
   }
 

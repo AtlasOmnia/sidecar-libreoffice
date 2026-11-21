@@ -38,9 +38,11 @@ whichever thread observes it first.
 One chat turn is ``_claim`` (reserve the session and a slot, synchronously) followed by ``_drive``
 (create the run and follow it to settlement, on ONE thread). ``chat()`` runs both on the request
 thread; ``begin_turn()`` runs ``_claim`` on the caller's thread and starts one worker per run that
-runs ``_drive`` and reports a ``TurnOutcome``. A user Stop only sets ``stop_requested``; the thread
-driving the run asks Hermes to stop it and reports the ``user`` outcome. Extra routes are added
-with ``add_route_handler`` and see each request before the built-in ``/health`` and ``/chat``.
+runs ``_drive`` and reports a ``TurnOutcome``. A user Stop sets ``stop_requested`` and, once the
+run's id is known, sends the stop to Hermes at once from a short-lived thread of its own with the
+run's own key (so it is not held up by a status poll in flight); the thread driving the run still
+observes the run until it settles, releases it and reports the ``user`` outcome. Extra routes are
+added with ``add_route_handler`` and see each request before the built-in ``/health`` and ``/chat``.
 """
 from __future__ import annotations
 
@@ -99,6 +101,11 @@ OUTCOME_UNCERTAIN = ("It is not known whether Hermes carried out this request or
 PLUGIN_TURNED_OFF = "the reply was stopped because the LibreOffice plugin was turned off"
 USER_STOPPED = "Stopped. Check the document for changes made before stopping."
 TURN_WORKER_FAILED = "the chat endpoint could not start this reply; try again shortly"
+# The machine code of the prepared refusal sent when every handler slot is taken.
+ENDPOINT_BUSY = "endpoint_busy"
+# Answers that are logged at DEBUG when they succeed: an idle Sidecar window polls its state every
+# 3 s and a page load fetches its files; every other answer and every refusal is logged at INFO.
+QUIET_LABELS = ("api-state", "ui-static")
 # Headers that carry a credential of the 0.5.0 Sidecar window or launcher (docs/web-protocol.md 1.2):
 # the legacy pair (/health, /chat) refuses a request that carries any of them, or any Sec-Fetch-*.
 FOREIGN_TO_LEGACY = ("x-sidecar-session", "x-sidecar-channel", "x-sidecar-counter", "x-sidecar-mac")
@@ -202,13 +209,17 @@ class _Run:
     one); ``run_id`` is None until Hermes's acknowledgement arrives. ``settled`` is set once, when
     the run is released; ``stopping`` is True while a stop request is in flight, so concurrent
     threads never send two at once; ``close_seen`` marks a run close() has already given a stop
-    thread; ``stop_requested`` is set by ``request_stop`` (a user Stop) and read only by the thread
-    driving the run, which then stops it with the ``user`` reason. ``hermes_state`` is the last
-    Runs API state observed for it (None before the first observation); it is display-only."""
+    thread; ``stop_requested`` is set by ``request_stop`` (a user Stop), which also sends the stop
+    at once from a thread of its own when the run's id is known; the thread driving the run then
+    reports the ``user`` outcome. ``stop_answer`` is a settled ``(state, body)`` such a stop was
+    answered with, for the driving thread to settle the run with (only an observing thread ever
+    releases a run). ``wake`` is set when the driving thread should stop waiting between status
+    polls (a user Stop, or close). ``hermes_state`` is the last Runs API state observed for it
+    (None before the first observation); it is display-only."""
 
     __slots__ = ("session_id", "key", "idempotency_key", "body", "run_id", "deadline", "driven", "sent",
                  "stop_acked", "stop_tried", "stopping", "settled", "close_seen", "stop_requested",
-                 "hermes_state")
+                 "stop_answer", "wake", "hermes_state")
 
     def __init__(self, session_id: str) -> None:
         self.session_id = session_id
@@ -225,6 +236,8 @@ class _Run:
         self.settled = False
         self.close_seen = False
         self.stop_requested = False
+        self.stop_answer: Optional[tuple[str, dict[str, Any]]] = None
+        self.wake = threading.Event()
         self.hermes_state: Optional[str] = None
 
 
@@ -324,6 +337,19 @@ class BoundedHTTPServer(ThreadingHTTPServer):
     # before the accept loop sees them. Connections over ``max_handlers`` are still refused.
     request_queue_size = 64
 
+    @property
+    def allow_reuse_address(self) -> bool:   # type: ignore[override]
+        # On Windows SO_REUSEADDR lets a socket of another user account bind the same address
+        # and port while this listener is up; there the port is bound exclusively instead
+        # (server_bind). Elsewhere SO_REUSEADDR only allows a restart over TIME_WAIT
+        # connections: a second bind to the same address and port still fails.
+        return not _WINDOWS
+
+    def server_bind(self) -> None:
+        if _WINDOWS:
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)  # type: ignore[attr-defined]
+        super().server_bind()
+
     def __init__(self, address: tuple[str, int], handler: type, *, max_handlers: int, refusal: bytes) -> None:
         self._slots = threading.BoundedSemaphore(max_handlers)
         self._refusal = refusal
@@ -380,7 +406,8 @@ class ChatBridge:
         self._close_deadline: Optional[float] = None
         self._closing = threading.Event()
         self._close_workers = 0                                # close()'s stop threads still running
-        self._polls: set[http.client.HTTPConnection] = set()   # status polls in flight
+        self._polls: set[http.client.HTTPConnection] = set()   # status polls (and user stops) in flight
+        self._local = threading.local()                       # cut_off: this thread's calls are cut off at close
         self._route_handlers: list[Callable[[Any], bool]] = []
         self._close_hooks: list[tuple[Callable[[], None], Callable[[float], None]]] = []
         # Called (outside the lock, on the thread following the run) when a run's observed Runs
@@ -445,8 +472,12 @@ class ChatBridge:
             if self._closed:
                 raise RuntimeError("a closed chat endpoint cannot be started again")
             if self._server is None:
+                # Prepared once; it answers any route when every handler slot is taken, so it has
+                # a machine code of its own (docs/web-protocol.md 9.1): the launcher shows busy,
+                # not an older plugin, and a page knows nothing was processed.
                 refusal = _refusal_response("HTTP/1.1", "503 Service Unavailable",
-                                            {"ok": False, "error": "the chat endpoint is busy; try again shortly"})
+                                            {"ok": False, "error": "the chat endpoint is busy; try again shortly",
+                                             "code": ENDPOINT_BUSY})
                 server = BoundedHTTPServer(("127.0.0.1", self.port), _handler_for(self),
                                            max_handlers=self.max_handlers, refusal=refusal)
                 self.port = server.server_address[1]
@@ -488,6 +519,7 @@ class ChatBridge:
             server, self._server = self._server, None
             workers = []
             for run in self._runs.values():
+                run.wake.set()                              # a driving thread between polls looks now
                 if run.run_id and not run.close_seen:
                     run.close_seen = True
                     run.stop_acked = False                  # unload asks again, whatever was asked before
@@ -612,11 +644,13 @@ class ChatBridge:
 
     def _limit(self, deadline: float) -> float:
         """``deadline``, or the close budget's end when that comes first."""
-        with self._lock:
-            close = self._close_deadline
+        close = self._close_deadline   # set once, under the lock, by close(); reading it needs no lock
         return deadline if close is None else min(deadline, close)
 
-    def _pause(self, seconds: float) -> None:
+    def _pause(self, seconds: float, limit: float) -> None:
+        """Wait ``seconds``, but never past ``limit``: what is left is read again just before
+        waiting, so a thread that was held up never waits into time it no longer has."""
+        seconds = min(seconds, limit - time.monotonic())
         if seconds > 0:
             if self._closed:
                 time.sleep(seconds)
@@ -671,14 +705,50 @@ class ChatBridge:
             log.error("libreoffice chat: a turn's outcome could not be stored (%s)", type(exc).__name__)
 
     def request_stop(self, run: _Run) -> bool:
-        """A user Stop: only sets ``stop_requested``; the thread driving the run sends the stop
-        and reports the ``user`` outcome. Returns False when the run has already settled."""
+        """A user Stop: sets ``stop_requested`` and wakes the thread driving the run. When the
+        run's id is known (and no stop is in flight or acknowledged), the stop is sent to Hermes at
+        once by a short-lived thread with the run's own key, bounded by ``RECONCILE_SECONDS`` and
+        the close budget, so a status poll in flight cannot hold it back. Only the thread driving
+        the run settles and releases it, and reports the ``user`` outcome; before the id is known
+        that thread sends the stop as soon as creation answers. Returns False when the run has
+        already settled."""
         with self._lock:
             if run.settled:
                 return False
             run.stop_requested = True
-            self._lock.notify_all()   # wake the thread following the run: the stop is sent now
-            return True
+            run.wake.set()   # the thread following the run stops waiting between polls
+            send = (run.run_id is not None and not run.stopping and not run.stop_acked
+                    and not run.close_seen and not self._closed)
+            if send:
+                run.stopping = True   # the one stop in flight for this run: _user_stop owns it
+        if send:
+            sender = threading.Thread(target=self._user_stop, args=(run,), name="HermesLibreOfficeChatUserStop",
+                                      daemon=True)
+            try:
+                sender.start()
+            except Exception:  # noqa: BLE001 - no thread: the thread driving the run sends it instead
+                with self._lock:
+                    run.stopping = False
+        return True
+
+    def _user_stop(self, run: _Run) -> None:
+        """The stop of ``request_stop``, sent with the slot ``stopping`` already reserved. A
+        settled answer is handed to the driving thread (``stop_answer``); this thread never
+        releases the run. Its connection is cut off by close() like a status poll."""
+        self._local.cut_off = True
+        try:
+            answer = self._send_stop(run, self._limit(time.monotonic() + RECONCILE_SECONDS))
+            if answer is not None:
+                with self._lock:
+                    if not run.settled:
+                        run.stop_answer = answer
+                    idle = not run.settled and not run.driven
+                if idle:   # nobody follows it any more (unresolved): the settled answer frees it
+                    self._release(run)
+        except Exception as exc:  # noqa: BLE001 - never let exception text (it can hold a secret) out
+            log.error("libreoffice chat: a stop could not be sent (%s)", type(exc).__name__)
+        finally:
+            self._local.cut_off = False
 
     def session_state(self, session_id: str) -> Optional[str]:
         """``driven`` (a thread is creating or following its run), ``unresolved`` (it still owns
@@ -701,13 +771,13 @@ class ChatBridge:
             send.update({"Content-Type": "application/json", "Content-Length": str(len(body))})
         send.update(headers or {})
         connection = http.client.HTTPConnection(self.api_host, self.api_port, timeout=max(0.1, timeout))
-        poll = method == "GET"
+        poll = method == "GET" or getattr(self._local, "cut_off", False)
         try:
             try:
                 connection.connect()
             except OSError:
                 raise _NotSent(502, "the Hermes API server did not answer: enable it and start the Hermes gateway") from None
-            if poll:   # close() may cut it off (see _cut_off)
+            if poll:   # close() may cut it off (see _cut_off): a status poll, or a user Stop's request
                 with self._lock:
                     self._polls.add(connection)
             try:
@@ -791,7 +861,7 @@ class ChatBridge:
                     raise ChatError(502, f"the Hermes API server answered with an error (HTTP {status})")
                 uncertain_until = time.monotonic() + RECONCILE_SECONDS   # an answer without a run id
             # A replay that is refused does not prove the first request was not admitted.
-            self._pause(min(delay, max(0.0, limit - time.monotonic())))
+            self._pause(delay, limit)
             delay = min(delay * 2, 4 * self.poll_interval)
 
     def _observe(self, run: _Run, timeout: float) -> tuple[str, dict[str, Any]]:
@@ -803,19 +873,32 @@ class ChatBridge:
             raise ChatError(502, "the Hermes API server lost track of this reply")
         return state, value
 
-    def _request_stop(self, run: _Run, timeout: float) -> Optional[tuple[str, dict[str, Any]]]:
-        """``POST /v1/runs/{id}/stop`` with the run's own key. Returns ``(state, body)`` when the
-        answer already reports a settled run. Only an answer naming a known state acknowledges
-        the stop; a refused, unanswered or malformed one leaves ``stop_acked`` False, so it is
-        requested again. One stop per run is in flight at a time: a concurrent caller gets None."""
+    def _request_stop(self, run: _Run, limit: float) -> Optional[tuple[str, dict[str, Any]]]:
+        """``POST /v1/runs/{id}/stop`` with the run's own key, by ``limit`` at the latest. Returns
+        ``(state, body)`` when the answer already reports a settled run. Only an answer naming a
+        known state acknowledges the stop; a refused, unanswered or malformed one leaves
+        ``stop_acked`` False, so it is requested again. One stop per run is in flight at a time: a
+        concurrent caller gets None."""
         with self._lock:
             if run.stopping or run.settled:
                 return None
-            run.stopping = run.stop_tried = True
+            run.stopping = True
+        return self._send_stop(run, limit)
+
+    def _send_stop(self, run: _Run, limit: float) -> Optional[tuple[str, dict[str, Any]]]:
+        """The request of ``_request_stop`` once its caller holds the run's ``stopping`` slot
+        (released here). The call's timeout is what is left until ``limit`` when it is sent, so
+        a caller that waited for the slot never spends time it no longer has; with none left,
+        nothing is sent."""
         try:
-            status, value = self._call(run.key, "POST", f"{self.runs_path}/{run.run_id}/stop", {}, timeout=timeout)
-        except ChatError:
-            return None
+            timeout = min(UPSTREAM_CALL_SECONDS, limit - time.monotonic())
+            if timeout <= 0:
+                return None
+            run.stop_tried = True
+            try:
+                status, value = self._call(run.key, "POST", f"{self.runs_path}/{run.run_id}/stop", {}, timeout=timeout)
+            except ChatError:
+                return None
         finally:
             with self._lock:
                 run.stopping = False
@@ -836,7 +919,7 @@ class ChatBridge:
             return
         log.warning("libreoffice chat: a panel run became known after the endpoint closed; asking it to stop "
                     "(the tool fence may already be removed)")
-        answer = self._request_stop(run, LATE_STOP_SECONDS)
+        answer = self._request_stop(run, time.monotonic() + LATE_STOP_SECONDS)
         if answer is not None:
             self._release(run)
 
@@ -858,8 +941,11 @@ class ChatBridge:
                 stop_reason = "closed" if self._closed else ("user" if run.stop_requested else "timeout")
                 settle_by = now + RECONCILE_SECONDS
             limit = self._limit(settle_by if stop_reason else run.deadline)
+            answer = run.stop_answer   # a user Stop's own answer already reported the run settled
+            if answer is not None:
+                return self._settled(run, answer[0], answer[1], stop_reason)
             if stop_reason and not run.stop_acked and limit > time.monotonic():
-                answer = self._request_stop(run, min(UPSTREAM_CALL_SECONDS, limit - time.monotonic()))
+                answer = self._request_stop(run, limit)
                 if answer is not None:
                     return self._settled(run, answer[0], answer[1], stop_reason)
             left = limit - time.monotonic()
@@ -877,27 +963,28 @@ class ChatBridge:
             except ChatError:
                 if stop_reason is None:
                     stop_reason, settle_by = "lost", time.monotonic() + RECONCILE_SECONDS
-                self._pause(min(delay, max(0.0, self._limit(settle_by) - time.monotonic())))
+                self._pause(delay, self._limit(settle_by))
                 delay = min(delay * 2, 4 * self.poll_interval)
                 continue
             self._note_state(run, state)
             if state in _SETTLED_STATES:
+                if stop_reason is None and run.stop_requested:   # the user's stop landed during this poll
+                    stop_reason = "user"
                 return self._settled(run, state, value, stop_reason)
             if stop_reason or self._closed:
-                self._pause(min(self.poll_interval, max(0.0, self._limit(settle_by if stop_reason else run.deadline)
-                                                        - time.monotonic())))
+                self._pause(self.poll_interval, self._limit(settle_by if stop_reason else run.deadline))
             else:
                 self._wait_unless_stopped(run, min(delay, max(0.0, run.deadline - time.monotonic())))
                 delay = min(delay * 2, 4 * self.poll_interval)
 
     def _wait_unless_stopped(self, run: _Run, seconds: float) -> None:
         """Wait between status polls, but wake at once when the endpoint closes or a user Stop is
-        requested (``request_stop`` notifies), so the stop is sent to Hermes without waiting for
-        the next poll."""
+        requested (both set ``run.wake``), so the run's state is read again without waiting for
+        the next poll. Waits on the run's own event, not the endpoint's lock, so following a run
+        never competes with stops and close() for that lock."""
         if seconds <= 0:
             return
-        with self._lock:
-            self._lock.wait_for(lambda: self._closed or run.stop_requested, seconds)
+        run.wake.wait(seconds)
 
     def _settled(self, run: _Run, state: str, value: dict[str, Any], stop_reason: Optional[str]) -> str:
         self._release(run)
@@ -1011,8 +1098,10 @@ def _handler_for(bridge: ChatBridge) -> type:
             if status >= 400:
                 _linger_close(self.connection)
             method = self.command if self.command in ("GET", "POST", "HEAD", "OPTIONS") else "OTHER"
-            log.info("libreoffice chat %s %s -> %d in %.1fs", method, self._route(), status,
-                     time.monotonic() - start)
+            route = self._route()
+            level = logging.DEBUG if status < 400 and route in QUIET_LABELS else logging.INFO
+            log.log(level, "libreoffice chat %s %s -> %d in %.1fs", method, route, status,
+                    time.monotonic() - start)
 
         def _finish(self, status: int, payload: dict[str, Any], start: float) -> None:
             data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")

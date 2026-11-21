@@ -101,6 +101,9 @@ class Timing:
         return dict(self.__dict__)
 
 
+_NO_SEND_ID = object()   # an /api/chat body without send_id (revision 2 callers)
+
+
 class WebError(Exception):
     def __init__(self, status: int, code: str, message: str, *, ended: Any = "absent",
                  headers: tuple[tuple[str, str], ...] = ()) -> None:
@@ -122,9 +125,12 @@ class Turn:
         self.inflight = 0
         self.last_poll = time.monotonic()
         self.gone_requested = False
+        self.send_id: Optional[str] = None
+        self.message = ""
 
     def view(self, have: Optional[int] = None) -> dict[str, Any]:
-        out: dict[str, Any] = {"id": self.id, "seq": self.seq, "state": self.state, "hermes_state": self.hermes_state}
+        out: dict[str, Any] = {"id": self.id, "seq": self.seq, "state": self.state, "hermes_state": self.hermes_state,
+                               "send_id": self.send_id}
         if have is not None:
             start = min(have, len(self.text))
             out["text_from"] = start
@@ -162,6 +168,8 @@ class Channel:
         self.next_counter = 1
         self.calls = 0
         self.expires = time.monotonic() + ttl
+        self.last_call = 0.0
+
 
 
 ROUTES = {
@@ -186,6 +194,7 @@ BODY_KEYS = {
     "/api/new-chat": set(),
     "/api/session/close": set(),
 }
+OPTIONAL_KEYS = {"/api/chat": {"send_id"}}   # contract revision 3, 6.3
 READ_ERRORS = {411: "length_required", 413: "too_large", 408: "body_timeout", 400: "bad_request"}
 
 
@@ -457,7 +466,8 @@ class Stub:
             data = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
             raise WebError(400, "bad_request", "the request body is not valid JSON") from None
-        if not isinstance(data, dict) or set(data) != BODY_KEYS[name]:
+        if not isinstance(data, dict) or (set(data) != BODY_KEYS[name]
+                                          and set(data) != BODY_KEYS[name] | OPTIONAL_KEYS.get(name, set())):
             raise WebError(400, "bad_request", "the request body does not have the expected keys")
         return data
 
@@ -482,9 +492,11 @@ class Stub:
             with self.cv:
                 if self.closing:
                     raise WebError(503, "turned_off", "the plugin is unloading")
-                while len(self.channels) >= self.timing.max_channels:
-                    oldest = min(self.channels, key=lambda n: self.channels[n].expires)
-                    del self.channels[oldest]
+                # Revision 3 (3.1): a hello displaces only a channel not used yet, the oldest first.
+                unused = [n for n, ch in self.channels.items() if ch.next_counter == 1]
+                for name in sorted(unused, key=lambda n: self.channels[n].expires)[
+                        :max(0, len(unused) - self.timing.max_channels + 1)]:
+                    del self.channels[name]
                 self.channels[nonce] = Channel(contract.channel_key(token, self.port, data["client_nonce"], nonce),
                                                self.timing.channel_ttl)
             self._json(req, 200, {"ok": True, "v": 1, "server_nonce": nonce,
@@ -573,6 +585,11 @@ class Stub:
                 raise WebError(401, "launcher_auth", "the launcher channel is not valid")
             channel.next_counter += 1
             channel.calls += 1
+            channel.last_call = time.monotonic()
+            if channel.calls == 1:   # 3.1: a first verified call may displace the least recently called used one
+                used = [n for n, ch in self.channels.items() if ch.calls > 0 and ch is not channel]
+                if len(used) >= self.timing.max_channels:
+                    del self.channels[min(used, key=lambda n: self.channels[n].last_call)]
             return channel, int(counters[0])
 
     def _evictable_locked(self, document_id: str) -> Optional[Session]:
@@ -663,7 +680,7 @@ class Stub:
             return self._turn(req, session, target, start)
         data = self._parse(raw or b"", name)
         if name == "/api/chat":
-            return self._chat(req, session, data["message"], start)
+            return self._chat(req, session, data["message"], start, data.get("send_id", _NO_SEND_ID))
         if name == "/api/turn/stop":
             turn_id = data["turn"]
             if not isinstance(turn_id, str):
@@ -748,10 +765,27 @@ class Stub:
                               "limits": {"max_message": self.cb.MAX_MESSAGE}}, start)
         return True
 
-    def _chat(self, req: Any, session: Session, message: Any, start: float) -> bool:
+    def _chat(self, req: Any, session: Session, message: Any, start: float, send_id: Any = None) -> bool:
         if not isinstance(message, str) or not message.strip() or len(message) > self.cb.MAX_MESSAGE:
             raise WebError(400, "message_invalid", f"A message must be 1 to {self.cb.MAX_MESSAGE} characters.")
+        if send_id is _NO_SEND_ID:
+            send_id = None
+        elif not isinstance(send_id, str) or not contract.ID22_RE.fullmatch(send_id):
+            raise WebError(400, "bad_request", "send_id must be 22 base64url characters")
+        with self.cv:
+            current = session.turn
+            if send_id is not None and current is not None and current.send_id == send_id:
+                if current.message != message.strip():
+                    raise WebError(400, "bad_request", "a send_id names one message")
+                view = current.view()
+                replay = True
+            else:
+                replay = False
+        if replay:
+            self._json(req, 200, {"ok": True, "turn": view, "replayed": True}, start)
+            return True
         turn = Turn(session)
+        turn.send_id, turn.message = send_id, message.strip()
 
         def on_done(_run: Any, outcome: Any) -> None:
             with self.cv:
@@ -782,7 +816,7 @@ class Stub:
             view = turn.view()
         if session.ended is not None:
             self._stop_run(run)
-        self._json(req, 202, {"ok": True, "turn": view}, start)
+        self._json(req, 202, {"ok": True, "turn": view, "replayed": False}, start)
         return True
 
     def _turn(self, req: Any, session: Session, target: str, start: float) -> bool:

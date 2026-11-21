@@ -41,7 +41,7 @@ class CloseTests(WebCase):
         return {"poll_interval": 0.05, "long_poll_seconds": 20.0}
 
     def park(self, page, turn):
-        seq = page.turn(turn, 0)[1]["turn"]["seq"]
+        seq = self.followed_seq(page, turn)
         return in_background(page.turn, turn, seq, 0, 30.0)
 
     def test_parked_long_polls_answer_turned_off_before_close_returns_and_runs_drain(self):
@@ -172,7 +172,8 @@ class PluginUnloadTests(unittest.TestCase):
         status, chat = page.chat()
         self.assertEqual(status, 202)
         turn = chat["turn"]["id"]
-        self.assertTrue(self.api.wait_for(lambda: self.api.polls()))
+        self.assertTrue(eventually(lambda: bridge.web.sessions.all()[0].turn.run.hermes_state == "running"),
+                        "the bridge noted the run's first status poll")
         seq = page.turn(turn, 0)[1]["turn"]["seq"]
         bridge.web.long_poll_seconds = 20.0
         thread, results = in_background(page.turn, turn, seq, 0, 30.0)

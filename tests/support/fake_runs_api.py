@@ -33,8 +33,10 @@ class FakeRunsApi:
     ``completed`` with ``reply``. ``stop_mode``: ``ok`` (the run settles as ``cancelled`` at the
     next poll), ``settle`` (the stop answer itself reports ``cancelled``), ``unconfirmed``
     (acknowledged, never settles) or ``refuse`` (409). ``create_gate``: run creation waits on this
-    event before answering. ``stops`` holds ``(run_id, time.monotonic())`` for every stop request;
-    ``calls`` every request.
+    event before answering. ``get_hold``: ``headers`` (a status poll sends nothing until
+    ``get_release`` is set) or ``body`` (it sends its status line and headers, then holds the
+    body); ``held_gets`` counts the polls being held. ``stops`` holds ``(run_id,
+    time.monotonic())`` for every stop request; ``calls`` every request.
     """
 
     def __init__(self, key: str = API_KEY) -> None:
@@ -47,6 +49,9 @@ class FakeRunsApi:
         self.live_state, self.reply, self.stop_mode = "running", "**Done.** Total is 446.", "ok"
         self.finish = threading.Event()
         self.create_gate: Optional[threading.Event] = None
+        self.get_hold: Optional[str] = None
+        self.get_release = threading.Event()
+        self.held_gets = 0
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -114,10 +119,29 @@ class FakeRunsApi:
             def do_GET(self) -> None:
                 with outer.lock:
                     outer.calls.append(("GET", self.path, None))
+                    hold = outer.get_hold
+                    if hold:
+                        outer.held_gets += 1
                     outer.lock.notify_all()
+                if hold == "headers":
+                    outer.get_release.wait(30)
                 if not self._authorized():
                     return self._send(401, {"error": {"message": "invalid API key"}})
                 run_id = self.path.rsplit("/", 1)[-1]
+                if hold == "body":   # the status line and headers now, the body once released
+                    with outer.lock:
+                        state = outer.live_state
+                    data = json.dumps({"run_id": run_id, "status": state}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    self.wfile.flush()
+                    outer.get_release.wait(30)
+                    self.wfile.write(data)
+                    self.close_connection = True
+                    return None
                 with outer.lock:
                     run = outer.runs.get(run_id)
                     state = outer.live_state
@@ -145,6 +169,7 @@ class FakeRunsApi:
         return [call for call in self.calls if call[0] == "GET"]
 
     def close(self) -> None:
+        self.get_release.set()   # a held poll answers instead of holding a server thread
         self.server.shutdown()
         self.server.server_close()
 
@@ -222,7 +247,9 @@ def make_fixture(directory: Optional[str] = None) -> Path:
 
 def write_sums(root: Path, listed: tuple) -> None:
     lines = [f"{hashlib.sha256((root / relpath).read_bytes()).hexdigest()}  {relpath}\n" for relpath in sorted(listed)]
-    (root / "SHA256SUMS").write_text("".join(lines), encoding="ascii")
+    # Bytes, not text: write_text would turn each LF into CRLF on Windows, and the plugin reads
+    # SHA256SUMS strictly (LF lines, as git checks it out with this repository's .gitattributes).
+    (root / "SHA256SUMS").write_bytes("".join(lines).encode("ascii"))
 
 
 # -- clients --
@@ -423,3 +450,19 @@ class WebCase(unittest.TestCase):
         status, value = page.chat(message)
         self.assertEqual(status, 202, value)
         return value["turn"]["id"]
+
+    def followed_seq(self, page: PageClient, turn_id: str, state: str = "running") -> int:
+        """The turn's ``seq`` once the bridge has NOTED the run's first status poll (its raw Runs
+        API state is ``state``), not merely once the fake has received that poll: a long-poll sent
+        with this ``seq`` is then answered only by a later change."""
+        def noted() -> bool:
+            with self.web._cond:
+                for session in self.web.sessions.all():
+                    turn = session.turn
+                    if turn is not None and turn.id == turn_id and turn.run is not None:
+                        return turn.run.hermes_state == state
+            return False
+        self.assertTrue(eventually(noted), "the bridge never noted the run's state")
+        status, value = page.turn(turn_id, 0)
+        self.assertEqual(status, 200, value)
+        return value["turn"]["seq"]

@@ -39,6 +39,7 @@
   };
   var STATE_POLL_MS = 3000;
   var RETRY_MS = 1000;
+  var SEND_TRIES = 3;          // one Send: the request and at most two retries with the same send_id
   var HOST_GONE_CLOSE_MS = 2000;
 
   // Section 9.2 of the contract: what the page says when its session ended, by reason.
@@ -73,6 +74,9 @@
     unreachable: "Hermes is not reachable. Check that the Hermes gateway is running.",
     newChat: "New chat",
     replyFailed: "I couldn't complete that request.",
+    checkingSend: "Checking that Hermes got your message…",
+    sendUnknown: "It is not known whether Hermes received this message. If it did, its reply appears here; check the document before you send it again.",
+    sendLost: "Your message did not reach Hermes. Send it again.",
     emptyReply: "Hermes finished without a reply.",
     copyLink: "Copy link",
     copied: "Copied",
@@ -101,6 +105,8 @@
   var ended = false;
   var info = { document: null, endpoint: "", chatLabel: "", chatReady: false, chatReason: null, maxMessage: 8000 };
   var turn = null;             // { id, seq, have, text, state, stopSent }
+  var seenTurns = {};          // ids of the turns this window has followed, so each reply is shown once
+  var pendingSend = null;      // { id, message, tries, unknown } while it is not known whether Send arrived
   var sending = false;
   var focusStop = false;       // Send came from the composer: move focus to Stop once it is usable
   var unreachable = false;
@@ -200,6 +206,8 @@
     session = null;
     ended = true;
     turn = null;
+    pendingSend = null;
+    sending = false;
     stopStatePolling();
     setRunning(false);
     setComposerEnabled(false);
@@ -300,11 +308,23 @@
       }
     }
 
-    // A turn this window does not follow yet (for example, the answer to Send was lost).
+    // A turn this window has not followed yet, also one that has already ended (the answer to Send
+    // was lost and the reply finished before this poll): follow it, so its reply is shown once.
     var view = data.turn;
-    if (!turn && view && typeof view === "object" && typeof view.id === "string" && view.state !== "done") {
+    if (!turn && !sending && view && typeof view === "object" && typeof view.id === "string" &&
+        !Object.prototype.hasOwnProperty.call(seenTurns, view.id)) {
+      pendingSend = null;
       startTurn(view);
       return;
+    }
+    if (pendingSend && pendingSend.unknown && !sending) {
+      // The plugin answered and holds no turn of that Send: it never arrived.
+      var lost = pendingSend;
+      pendingSend = null;
+      addMessage("assistant", null, TEXTS.sendLost);
+      var input = byId("prompt-input");
+      if (!input.value) input.value = lost.message;
+      setStatus(info.chatReady ? TEXTS.ready : TEXTS.chatOff);
     }
     setRunning(!!turn || sending);
   }
@@ -363,29 +383,71 @@
     focusStop = document.activeElement === input || document.activeElement === byId("send-button");
     input.value = "";
     addMessage("user", prompt);
+    pendingSend = { id: newSendId(), message: prompt, tries: 0, unknown: false };
+    setStatus(TEXTS.working);
+    deliver(pendingSend);
+  }
+
+  // One Send, made idempotent by its send_id (contract 6.3): when the answer is lost, the same
+  // request is sent again, and the plugin answers with the turn the first one started instead of
+  // starting another. Nothing is sent again once SEND_TRIES requests went unanswered.
+  function deliver(p) {
+    if (pendingSend !== p || !session) return;
+    p.tries += 1;
     sending = true;
     setRunning(true);
-    setStatus(TEXTS.working);
-    api("POST", "/api/chat", { message: prompt }).then(function (result) {
-      sending = false;
+    api("POST", "/api/chat", { message: p.message, send_id: p.id }).then(function (result) {
+      if (pendingSend !== p) return;
       if (result.ok && result.data.turn && typeof result.data.turn.id === "string") {
+        sending = false;
+        pendingSend = null;
         startTurn(result.data.turn);
         return;
       }
       if (handleSessionEnd(result)) return;
+      var code = result.data.code;
+      // endpoint_busy: every handler slot was taken, nothing was read. busy on a retry: the
+      // first request of this Send is still being admitted. Both: ask again with the same send_id.
+      if (code === "endpoint_busy" || (code === "busy" && p.tries > 1)) {
+        retryDelivery(p);
+        return;
+      }
+      sending = false;
+      pendingSend = null;
       focusStop = false;
       showTurnError(sentence(result.data.error, TEXTS.replyFailed));
       finishRunning();
     }, function () {
-      sending = false;
-      focusStop = false;
-      // The plugin may have started the turn anyway; the next state poll picks it up.
-      showTurnError(TEXTS.unreachable);
-      finishRunning();
+      if (pendingSend === p) retryDelivery(p);
     });
   }
 
+  function retryDelivery(p) {
+    if (p.tries < SEND_TRIES) {
+      setStatus(TEXTS.checkingSend);
+      setTimeout(function () { deliver(p); }, RETRY_MS);
+      return;
+    }
+    // Not known whether it arrived. No blind resend: the state poll shows its turn if it did,
+    // and lets the user send again only once the plugin answers without it.
+    sending = false;
+    focusStop = false;
+    p.unknown = true;
+    addMessage("assistant", null, TEXTS.sendUnknown);
+    setStatus(TEXTS.uncertain);
+    finishRunning();
+  }
+
+  function newSendId() {
+    var bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    var raw = "";
+    for (var i = 0; i < bytes.length; i += 1) raw += String.fromCharCode(bytes[i]);
+    return btoa(raw).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
   function startTurn(view) {
+    seenTurns[view.id] = true;
     turn = {
       id: view.id,
       seq: typeof view.seq === "number" ? view.seq : 0,
@@ -512,10 +574,11 @@
   }
 
   function newChat() {
-    if (!session || turn || sending) return;
+    if (!session || turn || sending || pendingSend) return;
     byId("new-chat-button").disabled = true;
     api("POST", "/api/new-chat", {}).then(function (result) {
       if (result.ok) {
+        seenTurns = {};
         byId("messages").replaceChildren();
         if (typeof result.data.chat_label === "string") info.chatLabel = result.data.chat_label;
         var docTitle = info.document && typeof info.document.title === "string" ? info.document.title : "";
@@ -703,7 +766,7 @@
   }
 
   function setRunning(isRunning) {
-    var usable = !!session && !ended && info.chatReady && !unreachable;
+    var usable = !!session && !ended && info.chatReady && !unreachable && !pendingSend;
     byId("send-button").disabled = isRunning || !usable;
     byId("prompt-input").disabled = isRunning || !usable;
     byId("stop-button").disabled = !isRunning || !turn || turn.stopSent;

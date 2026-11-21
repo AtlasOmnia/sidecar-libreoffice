@@ -241,6 +241,128 @@ class UserStopTests(SeamCase):
         self.assertEqual(set(chat_bridge.TurnOutcome.KINDS), {"completed", "user", "uncertain", "turned_off", "error"})
 
 
+class ImmediateStopTests(SeamCase):
+    """A user Stop is sent at once from its own thread with the run's key, even while the thread
+    driving the run is blocked in a status poll (critic2 B3); the driving thread still settles,
+    releases (once) and reports the outcome."""
+
+    def hold_first_poll(self):
+        self.api.get_gate = threading.Event()
+        run = self.begin()
+        self.wait_for(lambda: self.api.get_held)
+        return run
+
+    def test_a_stop_is_sent_while_the_worker_is_blocked_in_a_status_poll(self):
+        run = self.hold_first_poll()
+        self.assertTrue(self.bridge.request_stop(run))
+        self.wait_for(lambda: self.api.stops(), 5)
+        stops = self.api.stops()
+        self.assertEqual([(call["key"], call["path"].rsplit("/", 2)[-2]) for call in stops], [(API_KEY, run.run_id)])
+        self.assertFalse(run.settled, "a stop answer alone never releases the run")
+        self.api.get_gate.set()
+        outcome = self.outcomes.wait()
+        self.assertEqual((outcome.kind, outcome.text), ("user", chat_bridge.USER_STOPPED))
+        self.assertEqual(len(self.api.stops()), 1, "the driving thread does not send a second stop")
+        self.assertEqual(self.bridge.owned_runs(), 0)
+
+    def test_a_stop_answer_that_settles_the_run_is_settled_once_by_the_driving_thread(self):
+        self.api.stop, self.api.stop_shape = "shape", "cancelled"
+        with mock.patch.object(self.bridge, "_release", wraps=self.bridge._release) as release:
+            run = self.hold_first_poll()
+            self.bridge.request_stop(run)
+            self.wait_for(lambda: self.api.stops(), 5)
+            self.assertEqual(release.call_count, 0, "the stop's thread never releases a driven run")
+            self.api.get_gate.set()            # the held poll still says running
+            outcome = self.outcomes.wait()
+        self.assertEqual(outcome.kind, "user")
+        self.assertEqual([call.args[0] for call in release.call_args_list], [run], "released once")
+        self.assertEqual(self.bridge.owned_runs(), 0)
+
+    def test_a_reply_that_completed_before_the_stop_landed_is_still_the_reply(self):
+        self.api.stop, self.api.stop_shape = "shape", "completed"
+        run = self.hold_first_poll()
+        self.bridge.request_stop(run)
+        self.wait_for(lambda: self.api.stops(), 5)
+        self.api.get_gate.set()
+        self.assertEqual(self.outcomes.wait().kind, "completed")
+        self.assertEqual(self.bridge.owned_runs(), 0)
+
+    def test_a_refused_stop_is_asked_again_and_an_unconfirmed_run_stays_owned(self):
+        self.api.stop = "refuse"
+        run = self.hold_first_poll()
+        self.bridge.request_stop(run)
+        self.wait_for(lambda: self.api.stops(), 5)
+        self.api.get_gate.set()
+        outcome = self.outcomes.wait()
+        self.assertEqual((outcome.kind, outcome.text), ("uncertain", chat_bridge.OUTCOME_UNCERTAIN))
+        self.assertGreater(len(self.api.stops()), 1, "a refused stop is asked again")
+        self.assertEqual({call["key"] for call in self.api.stops()}, {API_KEY})
+        self.assertEqual((self.bridge.owned_runs(), self.bridge.session_state(SESSION)), (1, "unresolved"))
+
+    def test_an_unreadable_stop_answer_is_not_an_acknowledgement(self):
+        self.api.stop, self.api.stop_shape, self.api.stop_failures = "shape", "paused_forever", 1
+        run = self.hold_first_poll()
+        self.bridge.request_stop(run)
+        self.wait_for(lambda: self.api.stops(), 5)
+        self.api.get_gate.set()
+        self.assertEqual(self.outcomes.wait().kind, "user")
+        self.assertEqual(len(self.api.stops()), 2, "asked again by the driving thread, then confirmed")
+        self.assertEqual(self.bridge.owned_runs(), 0)
+
+    def test_a_second_stop_while_one_is_in_flight_sends_nothing(self):
+        stop_gate = threading.Event()
+        self.api.on_stop = lambda: stop_gate.wait(10)
+        run = self.hold_first_poll()
+        self.bridge.request_stop(run)
+        self.wait_for(lambda: self.api.stops(), 5)
+        self.assertTrue(self.bridge.request_stop(run))
+        self.assertTrue(self.bridge.request_stop(run))
+        self.assertEqual(len(self.api.stops()), 1)
+        stop_gate.set()
+        self.api.get_gate.set()
+        self.assertEqual(self.outcomes.wait().kind, "user")
+        self.assertEqual(len(self.api.stops()), 1)
+
+    def test_a_stop_asked_before_the_run_id_is_known_is_the_first_call_after_creation(self):
+        self.api.post_gate = threading.Event()
+        run = self.begin()
+        self.wait_for(lambda: self.api.creations())
+        self.bridge.request_stop(run)
+        self.api.post_gate.set()
+        self.assertEqual(self.outcomes.wait().kind, "user")
+        kinds = [(call["method"], call["path"].rsplit("/", 1)[-1]) for call in self.api.calls]
+        self.assertEqual(kinds[:2], [("POST", "runs"), ("POST", "stop")])
+        self.assertEqual(len(self.api.stops()), 1)
+
+    def test_unload_while_a_user_stop_is_in_flight_keeps_the_one_budget(self):
+        stop_gate = threading.Event()
+        self.api.stop, self.api.on_stop = "unconfirmed", lambda: stop_gate.wait(10)
+        run = self.hold_first_poll()
+        self.bridge.request_stop(run)
+        self.wait_for(lambda: self.api.stops(), 5)
+        before_close = len(self.api.calls)
+        start = self.clock.monotonic()
+        began = threading.Event()
+        closing = []
+
+        def unload():
+            began.set()
+            closing.append(self.bridge.close(BUDGET))
+        closer = threading.Thread(target=unload, daemon=True)
+        closer.start()
+        began.wait(5)
+        closer.join(10)
+        self.assertFalse(closer.is_alive(), "close() did not wait for the user stop in flight")
+        self.assertEqual(closing, [1], "a run not seen to stop is not drained")
+        for call in self.api.calls[before_close:]:   # every call made under close() fits its budget
+            self.assertLessEqual(call["at"] - start + call["timeout"], BUDGET + 0.01, call)
+        stop_gate.set()
+        self.api.get_gate.set()
+        outcome = self.outcomes.wait()
+        self.assertIn(outcome.kind, ("uncertain", "turned_off"))
+        self.assertEqual(self.bridge.owned_runs(), 1, "still owned: never seen to settle")
+
+
 class RouteHookTests(unittest.TestCase):
     def setUp(self):
         self.bridge = chat_bridge.ChatBridge(port=0, token=lambda: TOKEN, api_key=lambda: API_KEY, api_port=9)
@@ -284,7 +406,7 @@ class RouteHookTests(unittest.TestCase):
             connection.close()
 
     def test_added_routes_answer_with_their_own_headers_and_log_a_fixed_label(self):
-        with self.assertLogs(chat_bridge.log, level=logging.INFO) as captured:
+        with self.assertLogs(chat_bridge.log, level=logging.DEBUG) as captured:
             status, headers, body = self.request("GET", "/ui/hello.txt")
             for _ in range(250):
                 if any("ui-static" in line for line in captured.output):

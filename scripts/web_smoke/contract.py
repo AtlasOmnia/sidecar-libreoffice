@@ -167,7 +167,7 @@ CODES = {
     "channel_limit": 429, "too_many_launches": 429, "session_cap": 429, "launch_expired": 401,
     "launch_double_use": 401, "no_session": 401, "busy": 409, "unresolved": 409, "too_many": 429,
     "plugin_inactive": 503, "worker_failed": 503, "message_invalid": 400, "unknown_turn": 404,
-    "turn_running": 409, "turned_off": 503, "internal": 500,
+    "turn_running": 409, "turned_off": 503, "internal": 500, "endpoint_busy": 503,
 }
 END_REASONS = ("closed", "replaced", "host_gone", "turned_off", "idle", "double_use", "evicted")
 

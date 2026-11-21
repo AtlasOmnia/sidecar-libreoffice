@@ -69,13 +69,89 @@ class TurnTests(WebCase):
         self.assertIsNone(page.state()[1]["turn"])
         self.assertEqual(page.turn(second)[1]["code"], "unknown_turn")
 
+    def test_a_retried_send_answers_with_its_turn_and_starts_nothing(self):
+        page = self.page()
+        body = {"message": "Add a total row", "send_id": "S" * 22}
+        status, first = page.request("POST", "/api/chat", body)
+        self.assertEqual((status, first["replayed"], first["turn"]["send_id"]), (202, False, "S" * 22))
+        status, again = page.request("POST", "/api/chat", body)   # the first answer was lost: same request again
+        self.assertEqual((status, again["replayed"], again["turn"]["id"]), (200, True, first["turn"]["id"]))
+        self.api.finish.set()
+        done = page.wait_done(first["turn"]["id"])
+        status, late = page.request("POST", "/api/chat", body)   # a retry after the turn ended
+        self.assertEqual((status, late["replayed"], late["turn"]["state"]), (200, True, "done"))
+        self.assertEqual(late["turn"]["outcome"], done["outcome"])
+        self.assertEqual(len(self.api.creations()), 1, "one run for one send_id")
+        self.assertEqual(page.state()[1]["turn"]["send_id"], "S" * 22)
+        status, value = page.request("POST", "/api/chat", {"message": "Something else", "send_id": "S" * 22})
+        self.assertEqual((status, value["code"]), (400, "bad_request"), "a send_id names one message")
+        for bad in ("short", 7, None, "S" * 21 + "="):
+            status, value = page.request("POST", "/api/chat", {"message": "x", "send_id": bad})
+            self.assertEqual((status, value["code"]), (400, "bad_request"), repr(bad))
+        status, value = page.request("POST", "/api/chat", {"message": "Next", "send_id": "T" * 22})
+        self.assertEqual((status, value["replayed"]), (202, False), "a new send_id is a new turn")
+        self.assertTrue(self.api.wait_for(lambda: len(self.api.creations()) == 2))
+
+    def test_a_send_id_retried_while_its_claim_is_still_running_is_busy_not_a_second_run(self):
+        page = self.page()
+        body = {"message": "Add a total row", "send_id": "U" * 22}
+        claimed = threading.Event()
+        release = threading.Event()
+        original = self.bridge.begin_turn
+
+        def slow(*args, **kwargs):
+            claimed.set()
+            release.wait(10)
+            return original(*args, **kwargs)
+        with mock.patch.object(self.bridge, "begin_turn", slow):
+            first = in_background(page.request, "POST", "/api/chat", body)
+            self.assertTrue(claimed.wait(10))
+            status, value = page.request("POST", "/api/chat", body)
+            self.assertEqual((status, value["code"]), (409, "busy"))
+            release.set()
+            first[0].join(10)
+        self.assertEqual(first[1][0][0], 202)
+        self.assertTrue(self.api.wait_for(lambda: self.api.creations()))
+        self.api.finish.set()
+        page.wait_done(first[1][0][1]["turn"]["id"])
+        self.assertEqual(len(self.api.creations()), 1)
+
+    def test_a_raw_state_change_the_page_cannot_see_does_not_wake_the_long_poll(self):
+        # started and running are both shown as "running": noting the first poll's running late
+        # (as a loaded machine does) must not end a parked long-poll early (critic finding B2).
+        reached, release, noted = threading.Event(), threading.Event(), threading.Event()
+        original = self.bridge._note_state
+
+        def late(run, state):
+            if state == "running" and run.hermes_state == "started":
+                reached.set()
+                release.wait(10)
+                original(run, state)
+                noted.set()
+                return
+            original(run, state)
+        self.web.long_poll_seconds = 5.0
+        with mock.patch.object(self.bridge, "_note_state", late):
+            page = self.page()
+            turn = self.start_turn(page)
+            self.assertTrue(reached.wait(10), "the first status poll answered running")
+            seq = page.turn(turn, 0)[1]["turn"]["seq"]
+            thread, results = in_background(page.turn, turn, seq)
+            self.assertTrue(eventually(lambda: self.web._parked == 1))
+            release.set()
+            self.assertTrue(noted.wait(10))
+            record = self.web.sessions.all()[0].turn
+            self.assertEqual(record.seq, seq, "started -> running is no change the page can see")
+            self.assertEqual(self.web._parked, 1, "the long-poll is still parked")
+            self.api.finish.set()
+            thread.join(10)
+        self.assertEqual(results[0][1]["turn"]["state"], "done")
+
     def test_the_long_poll_parks_then_answers_the_unchanged_record(self):
         page = self.page()
         turn = self.start_turn(page)
-        self.assertTrue(self.api.wait_for(lambda: self.api.polls()))
-        _status, first = page.turn(turn, 0)
-        seq = first["turn"]["seq"]
-        self.assertEqual(first["turn"]["hermes_state"], "running")
+        seq = self.followed_seq(page, turn)
+        self.assertEqual(page.turn(turn, 0)[1]["turn"]["hermes_state"], "running")
         started = time.monotonic()
         status, value = page.turn(turn, seq)
         self.assertGreaterEqual(time.monotonic() - started, 0.5)
@@ -86,18 +162,25 @@ class TurnTests(WebCase):
         self.web.long_poll_seconds = 10.0
         page = self.page()
         turn = self.start_turn(page)
-        self.assertTrue(self.api.wait_for(lambda: self.api.polls()))
-        seq = page.turn(turn, 0)[1]["turn"]["seq"]
+        seq = self.followed_seq(page, turn)
         thread, results = in_background(page.turn, turn, seq)
-        self.assertTrue(eventually(lambda: self.web._parked == 1))
+        self.assertTrue(eventually(lambda: self.web._parked == 1), "the first long-poll is parked")
+        record = self.web.sessions.all()[0].turn
+        generation = record.poll_gen
         started = time.monotonic()
         newer = in_background(page.turn, turn, seq)
-        thread.join(5)
-        self.assertLess(time.monotonic() - started, 3.0)
+        thread.join(self.web.long_poll_seconds)
+        self.assertFalse(thread.is_alive(), "the older long-poll answered")
+        self.assertLess(time.monotonic() - started, self.web.long_poll_seconds, "before its own deadline")
+        self.assertEqual(record.poll_gen, generation + 1, "the newer long-poll took over the turn")
+        self.assertEqual(len(results), 1)
         self.assertEqual((results[0][0], results[0][1]["superseded"]), (200, True))
+        self.assertTrue(eventually(lambda: self.web._parked == 1), "the newer long-poll is parked")
         self.api.finish.set()
-        newer[0].join(10)
-        self.assertEqual(newer[1][0][1]["turn"]["state"], "done")
+        newer[0].join(self.web.long_poll_seconds)
+        self.assertFalse(newer[0].is_alive())
+        self.assertEqual(len(newer[1]), 1)
+        self.assertEqual((newer[1][0][1]["superseded"], newer[1][0][1]["turn"]["state"]), (False, "done"))
 
     def test_waiting_for_approval_is_reported(self):
         self.api.live_state = "waiting_for_approval"
@@ -209,20 +292,52 @@ class StopTests(WebCase):
         page = self.page()
         turn = self.start_turn(page)
         self.assertTrue(self.api.wait_for(lambda: self.api.polls()))
-        time.sleep(0.3)   # the worker is now waiting for its next status poll (2 s or more away)
-        polls = len(self.api.polls())
         asked = time.monotonic()
         status, value = page.stop(turn)
         self.assertEqual((status, value["turn"]["state"]), (202, "stopping"))
         self.assertTrue(self.api.wait_for(lambda: self.api.stops, 5))
-        self.assertLess(self.api.stops[0][1] - asked, 0.5, "the stop does not wait for the next poll")
-        self.assertEqual(len(self.api.polls()), polls, "no poll came first")
+        self.assertLess(self.api.stops[0][1] - asked, 2.0, "the stop does not wait for the next poll (2 s)")
         done = page.wait_done(turn)
         self.assertEqual(done["outcome"], {"kind": "user", "message": chat_bridge.USER_STOPPED})
         self.assertEqual(self.bridge.owned_runs(), 0)
+        self.assertEqual(len(self.api.stops), 1, "one stop")
         status, value = page.stop(turn)
         self.assertEqual((status, value["turn"]["state"]), (200, "done"), "a stop after the end is the final view")
         self.assertEqual(page.stop("A" * 22)[1]["code"], "unknown_turn")
+
+    def test_user_stop_reaches_hermes_while_a_status_poll_is_in_flight(self):
+        for hold in ("headers", "body"):
+            with self.subTest(hold=hold):
+                self.api.get_hold, self.api.held_gets = hold, 0
+                self.api.get_release.clear()
+                page = self.page(document_id=f"held-{hold}")
+                turn = self.start_turn(page)
+                self.assertTrue(self.api.wait_for(lambda: self.api.held_gets >= 1), "a status poll is held")
+                before = len(self.api.stops)
+                status, value = page.stop(turn)
+                self.assertEqual((status, value["turn"]["state"]), (202, "stopping"))
+                self.assertTrue(self.api.wait_for(lambda: len(self.api.stops) > before, 5),
+                                "the stop reached the Runs API while the poll was still held")
+                self.assertEqual(len(self.api.stops), before + 1)
+                self.api.get_hold = None
+                self.api.get_release.set()
+                done = page.wait_done(turn)
+                self.assertEqual(done["outcome"], {"kind": "user", "message": chat_bridge.USER_STOPPED})
+                self.assertEqual(len(self.api.stops), before + 1, "no second stop")
+                self.assertEqual(self.bridge.owned_runs(), 0)
+
+    def test_a_second_stop_while_the_first_is_in_flight_sends_nothing_more(self):
+        self.api.get_hold = "headers"
+        page = self.page()
+        turn = self.start_turn(page)
+        self.assertTrue(self.api.wait_for(lambda: self.api.held_gets >= 1))
+        self.assertEqual(page.stop(turn)[0], 202)
+        self.assertTrue(self.api.wait_for(lambda: self.api.stops, 5))
+        self.assertEqual(page.stop(turn)[0], 202)   # the page's Stop again (the turn is still stopping)
+        self.api.get_hold = None
+        self.api.get_release.set()
+        self.assertEqual(page.wait_done(turn)["outcome"]["kind"], "user")
+        self.assertEqual(len(self.api.stops), 1)
 
     def test_stop_while_the_run_is_being_created(self):
         self.api.create_gate = threading.Event()
@@ -318,8 +433,7 @@ class SessionEndStopTests(WebCase):
         self.web.long_poll_seconds = 3.0
         page = self.page()
         turn = self.start_turn(page)
-        self.assertTrue(self.api.wait_for(lambda: self.api.polls()))
-        seq = page.turn(turn, 0)[1]["turn"]["seq"]
+        seq = self.followed_seq(page, turn)
         thread, _results = in_background(page.turn, turn, seq)
         self.assertTrue(eventually(lambda: self.web._parked == 1))
         self.clock.advance(web_api.WINDOW_GONE_SECONDS * 2)
@@ -339,7 +453,7 @@ class BudgetTests(WebCase):
         self.assertTrue(self.api.wait_for(lambda: len({c[1] for c in self.api.polls()}) >= chat_bridge.MAX_ACTIVE))
         polls = []
         for page, turn in zip(pages, turns):
-            seq = page.turn(turn, 0)[1]["turn"]["seq"]
+            seq = self.followed_seq(page, turn)
             polls.append(in_background(page.turn, turn, seq, 0, 30.0))
         self.assertTrue(eventually(lambda: self.web._parked == chat_bridge.MAX_ACTIVE))
         states = [in_background(page.state) for page in pages]
@@ -362,8 +476,7 @@ class BudgetTests(WebCase):
     def test_no_more_than_max_active_long_polls_are_ever_parked(self):
         page = self.page()
         turn = self.start_turn(page)
-        self.assertTrue(self.api.wait_for(lambda: self.api.polls()))
-        seq = page.turn(turn, 0)[1]["turn"]["seq"]
+        seq = self.followed_seq(page, turn)
         with self.web._cond:
             self.web._parked = chat_bridge.MAX_ACTIVE
         try:

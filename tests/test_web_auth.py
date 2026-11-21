@@ -131,11 +131,36 @@ class ChannelTests(unittest.TestCase):
         first = self.open()
         opened = [self.open() for _ in range(web_auth.MAX_CHANNELS)]
         self.assertEqual(len(self.channels), web_auth.MAX_CHANNELS)
-        self.assertIsNone(self.call(*first, 1), "the oldest channel is dropped for a new hello")
+        self.assertIsNone(self.call(*first, 1), "the oldest unused channel is dropped for a new hello")
         self.assertIsNotNone(self.call(*opened[-1], 1))
         nonces = {nonce for nonce, _key in opened}
         self.assertEqual(len(nonces), len(opened), "a server nonce is never reissued")
 
+    def test_a_hello_never_displaces_a_channel_its_launcher_has_used(self):
+        used = self.open()
+        self.assertIsNotNone(self.call(*used, 1))         # a MAC-verified call: the channel is in use
+        for _ in range(10 * web_auth.MAX_CHANNELS):        # a flood of unauthenticated hellos
+            self.open()
+        self.assertEqual(len(self.channels), web_auth.MAX_CHANNELS + 1, "16 unused (the newest) and the used one")
+        self.assertIsNotNone(self.call(*used, 2), "the used channel survives any number of hellos")
+
+    def test_only_a_verified_call_displaces_a_used_channel_the_least_recently_called_first(self):
+        used = [self.open() for _ in range(web_auth.MAX_CHANNELS)]
+        for channel in used:
+            self.assertIsNotNone(self.call(*channel, 1))
+            self.clock.advance(0.1)
+        self.assertIsNotNone(self.call(*used[0], 2), "the first is now the most recently called")
+        for _ in range(3 * web_auth.MAX_CHANNELS):
+            self.open()
+        self.assertEqual(len(self.channels), 2 * web_auth.MAX_CHANNELS, "16 used, 16 unused: both pools are bounded")
+        self.assertTrue(all(nonce in self.channels._live for nonce, _key in used), "hellos displaced no used channel")
+        self.clock.advance(0.1)
+        newcomer = self.open()
+        self.assertIsNotNone(self.call(*newcomer, 1), "a 17th launcher's first verified call")
+        self.assertIsNone(self.call(*used[1], 2), "displaced the least recently called used channel")
+        self.assertIsNotNone(self.call(*used[2], 2))
+        self.assertIsNotNone(self.call(*used[0], 3))
+        self.assertEqual(sum(1 for c in self.channels._live.values() if c.calls), web_auth.MAX_CHANNELS)
 
 class LaunchAndSessionTableTests(unittest.TestCase):
     def setUp(self):

@@ -135,6 +135,8 @@ _ROUTES = {
 _BODY_KEYS = {"hello": ("v", "client_nonce"), "launch": ("document", "host_scheme", "mode", "bounds"),
               "release": ("document_id", "reason"), "session": ("launch",), "chat": ("message",),
               "stop": ("turn",), "new_chat": (), "close": ()}
+_OPTIONAL_KEYS = {"chat": ("send_id",)}   # a body has all of them or none (6.3)
+_NO_SEND_ID = object()                    # /api/chat without a send_id (a rev-2 caller)
 
 
 class WebError(Exception):
@@ -150,11 +152,16 @@ class WebError(Exception):
 
 class Turn:
     """The current turn of one session: what ``/api/turn`` reports. ``seq`` grows on every
-    change the page should see; ``reply`` is set once, when the turn completes."""
+    change the page should see (state, outcome, or the shown ``hermes_state``: ``shown`` is the
+    last one counted, so a Runs API change the page cannot see, ``started`` to ``running``, does
+    not wake a long-poll); ``reply`` is set once, when the turn completes. ``send_id`` and
+    ``send_digest`` name the ``/api/chat`` request that started it, so a retry of that same
+    request answers with this turn instead of starting another (6.3)."""
 
-    __slots__ = ("id", "seq", "state", "run", "reply", "outcome", "last_poll", "in_flight", "poll_gen", "gone")
+    __slots__ = ("id", "seq", "state", "run", "reply", "outcome", "last_poll", "in_flight", "poll_gen", "gone",
+                 "shown", "send_id", "send_digest")
 
-    def __init__(self, turn_id: str, now: float) -> None:
+    def __init__(self, turn_id: str, now: float, send_id: Optional[str] = None, send_digest: bytes = b"") -> None:
         self.id, self.seq, self.state = turn_id, 1, "working"
         self.run: Any = None
         self.reply = ""
@@ -163,6 +170,8 @@ class Turn:
         self.in_flight = 0        # long-polls of this turn being answered
         self.poll_gen = 0         # the newest long-poll's number: an older one is superseded
         self.gone = False         # the window-gone stop was requested
+        self.shown: Optional[str] = None
+        self.send_id, self.send_digest = send_id, send_digest
 
 
 class _Call:
@@ -414,6 +423,8 @@ class WebApi:
     @staticmethod
     def _shape(raw: Optional[bytes], name: str) -> dict:
         value = auth.parse_object(raw or b"", _BODY_KEYS[name])
+        if value is None and name in _OPTIONAL_KEYS:
+            value = auth.parse_object(raw or b"", _BODY_KEYS[name] + _OPTIONAL_KEYS[name])
         if value is None:
             raise WebError("bad_request")
         return value
@@ -538,7 +549,7 @@ class WebApi:
                            "turn": self._view(session.turn) if session.turn is not None else None}
             return self._send(call, 200, payload)
         if name == "chat":
-            return self._chat(call, session, body["message"])
+            return self._chat(call, session, body["message"], body.get("send_id", _NO_SEND_ID))
         if name == "stop":
             return self._stop(call, session, body["turn"])
         if name == "new_chat":
@@ -594,17 +605,33 @@ class WebApi:
                        "endpoint": self.origin, "limits": {"max_message": MAX_MESSAGE}}
         self._send(call, 200, payload)
 
-    def _chat(self, call: _Call, session: auth.Session, message: Any) -> None:
+    def _chat(self, call: _Call, session: auth.Session, message: Any, send_id: Any = None) -> None:
         if not isinstance(message, str) or not message.strip() or len(message) > MAX_MESSAGE:
             raise WebError("message_invalid")
+        if send_id is _NO_SEND_ID:
+            send_id = None
+        elif not isinstance(send_id, str) or not auth.SHORT_ID_RE.fullmatch(send_id):
+            raise WebError("bad_request")
+        digest = hashlib.sha256(message.strip().encode("utf-8")).digest()
         with self._cond:
             if session.ended is not None:
                 raise WebError("no_session", ended=session.ended)
-            if session.starting:
-                raise WebError("busy")
-            session.starting = True
-            chat_session_id, document = session.chat_session_id, session.document
-            turn = Turn(auth.new_short_id(), self._clock())
+            current = session.turn
+            if send_id is not None and current is not None and current.send_id == send_id:
+                # A retry of the request that started the current turn (its answer was lost):
+                # the same turn, nothing new is sent to Hermes (6.3).
+                if current.send_digest != digest:
+                    raise WebError("bad_request")
+                answer = (200, {"ok": True, "turn": self._view(current), "replayed": True})
+            else:
+                answer = None
+                if session.starting:
+                    raise WebError("busy")
+                session.starting = True
+                chat_session_id, document = session.chat_session_id, session.document
+                turn = Turn(auth.new_short_id(), self._clock(), send_id, digest)
+        if answer is not None:
+            return self._send(call, *answer)
         try:
             run = self.bridge.begin_turn(chat_session_id, compose_message(message.strip(), document),
                                          lambda _run, outcome: self.turn_done(turn, outcome))
@@ -615,13 +642,14 @@ class WebApi:
                 session.starting = False
         with self._cond:
             turn.run = run
+            turn.shown = HERMES_STATES.get(run.hermes_state)
             if session.ended is not None:   # the session ended while the run was claimed
                 self.bridge.request_stop(run)
                 raise WebError("no_session", ended=session.ended)
             session.turn = turn
             self._cond.notify_all()
             view = self._view(turn)
-        self._send(call, 202, {"ok": True, "turn": view})
+        self._send(call, 202, {"ok": True, "turn": view, "replayed": False})
 
     def _stop(self, call: _Call, session: auth.Session, turn_id: Any) -> None:
         if not isinstance(turn_id, str) or not auth.SHORT_ID_RE.fullmatch(turn_id):
@@ -696,7 +724,8 @@ class WebApi:
         hermes = None
         if turn.state != "done" and run is not None:
             hermes = HERMES_STATES.get(run.hermes_state)
-        view: dict = {"id": turn.id, "seq": turn.seq, "state": turn.state, "hermes_state": hermes}
+        view: dict = {"id": turn.id, "seq": turn.seq, "state": turn.state, "hermes_state": hermes,
+                      "send_id": turn.send_id}
         if have is not None:
             start = min(have, len(turn.reply))
             view["text_from"], view["text"] = start, turn.reply[start:]
@@ -717,11 +746,14 @@ class WebApi:
             self._cond.notify_all()
 
     def run_state_changed(self, run: Any) -> None:
-        """The bridge observed a new Runs API state for ``run``: wake that turn's long-poll."""
+        """The bridge observed a new Runs API state for ``run``: wake that turn's long-poll when
+        the state the page is shown changed (``started`` and ``running`` both show ``running``)."""
         with self._cond:
+            shown = HERMES_STATES.get(run.hermes_state)
             for session in self.sessions.all():
                 turn = session.turn
-                if turn is not None and turn.run is run and turn.state != "done":
+                if turn is not None and turn.run is run and turn.state != "done" and turn.shown != shown:
+                    turn.shown = shown
                     turn.seq += 1
                     self._cond.notify_all()
 

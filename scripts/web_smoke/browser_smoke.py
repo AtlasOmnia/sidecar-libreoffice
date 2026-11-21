@@ -570,6 +570,90 @@ class SkipScenario(Exception):
     pass
 
 
+class DropChatAnswers:
+    """Fail the browser's next ``drop`` answers to ``POST /api/chat`` on one page AFTER the plugin
+    has answered (CDP Fetch at the response stage): the plugin admitted the message, the page sees a
+    network error. Later answers pass. Answers are sent from a thread of their own (the CDP reader
+    thread must not wait for its own replies)."""
+
+    def __init__(self, page: Page, drop: int) -> None:
+        import threading
+        self.page, self.drop, self.paused = page, drop, 0
+        self.failed = 0
+        self._lock = threading.Lock()
+        self._threading = threading
+        page.chrome.listeners.append(self._on_event)
+        page.send("Fetch.enable", {"patterns": [{"urlPattern": "*/api/chat", "requestStage": "Response"}]})
+
+    def _on_event(self, msg: dict) -> None:
+        if msg.get("method") != "Fetch.requestPaused" or msg.get("sessionId") != self.page.session:
+            return
+        request_id = msg["params"]["requestId"]
+        with self._lock:
+            self.paused += 1
+            fail = self.paused <= self.drop
+            if fail:
+                self.failed += 1
+
+        def answer() -> None:
+            try:
+                if fail:
+                    self.page.send("Fetch.failRequest", {"requestId": request_id, "errorReason": "ConnectionReset"})
+                else:
+                    self.page.send("Fetch.continueRequest", {"requestId": request_id})
+            except Exception:  # noqa: BLE001 - the page may be gone; the scenario's checks report it
+                pass
+        self._threading.Thread(target=answer, daemon=True).start()
+
+    def close(self) -> None:
+        if self._on_event in self.page.chrome.listeners:
+            self.page.chrome.listeners.remove(self._on_event)
+
+
+def _creations(b: BCtx) -> int:
+    with b.t.fake.lock:
+        return sum(1 for c in b.t.fake.calls if c["kind"] == "create")
+
+
+REPLY_COUNT = ("Array.from(document.querySelectorAll('#messages .message.assistant'))"
+               ".filter((m) => m.innerText.includes(%s)).length")
+
+
+def _lost_send(b: BCtx, n: int, drop: int, message: str, needle: str, label: str) -> None:
+    page, _lid, _c = b.open_window(n)
+    created = _creations(b)
+    dropper = DropChatAnswers(page, drop)
+    try:
+        b.send(page, message)
+        count = REPLY_COUNT % json.dumps(needle)
+        shown = page.wait_for(f"{count} >= 1", 15)
+        b.check(f"{label}: the result is shown although the answer to Send was lost", bool(shown), True,
+                page.eval("document.getElementById('messages').innerText.slice(-300)"))
+        b.check(f"{label}: {drop} answer(s) to Send were dropped", dropper.failed == drop, drop, dropper.failed)
+        time.sleep(7.0)   # two or more state polls (every 3 s) after the result was shown
+        b.check(f"{label}: shown exactly once, also after later state polls", page.eval(count) == 1, 1, page.eval(count))
+        runs = _creations(b) - created
+        b.check(f"{label}: one run for one Send (no blind resend)", runs == 1, 1, runs)
+        disabled = page.eval("document.getElementById('prompt-input').disabled")
+        b.check(f"{label}: the composer is usable again", disabled is False, False, disabled)
+        b.check(f"{label}: zero securitypolicyviolation events", b.csp(page) == [], [], b.csp(page))
+    finally:
+        dropper.close()
+
+
+@scenario("g3.lost_send", "G3", "A lost answer to Send: the page retries with the same send_id and shows the reply once",
+          needs=("fake",))
+def _(b: BCtx) -> None:
+    _lost_send(b, 21, 1, "Lost answer [md]", "Sales by region", "one lost answer")
+
+
+@scenario("g3.lost_send_unknown", "G3", "Every answer to Send lost and the reply done before the next state poll: shown once from the state poll",
+          needs=("fake",))
+def _(b: BCtx) -> None:
+    _lost_send(b, 22, 3, "All answers lost [md]", "Sales by region", "completed")
+    _lost_send(b, 23, 3, "All answers lost [fail]", "Hermes could not finish this reply", "failed")
+
+
 def run_scenarios(make_target: Callable[[], Any], *, evidence: Optional[Path], tag: str, only: list[str] = (),
                   headless: bool = True) -> list[dict[str, Any]]:
     results = []

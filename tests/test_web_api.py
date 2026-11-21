@@ -185,6 +185,21 @@ class LaunchLifecycleTests(WebCase):
     def status(self, launcher, launch_id):
         return launcher.call("GET", f"/launcher/launch/{launch_id}")[1]["state"]
 
+    def test_unauthenticated_hellos_never_end_a_channel_in_use(self):
+        launcher = LauncherClient(self.port)
+        launcher.hello()
+        self.assertEqual(launcher.call("GET", "/launcher/launch/" + "A" * 22)[0], 404)   # MAC-verified: in use
+        flood = [LauncherClient(self.port, token="not-the-pairing-token-" + "x" * 30) for _ in range(40)]
+        for other in flood:
+            try:
+                other.hello()   # answered, though the proof cannot verify for a caller without the token
+            except AssertionError:
+                pass
+        self.assertEqual(len(self.web.channels), web_auth.MAX_CHANNELS + 1)
+        status, _value, answer_mac = launcher.call("GET", "/launcher/launch/" + "A" * 22)
+        self.assertEqual(status, 404, "the launcher's channel survived the flood")
+        self.assertIsNotNone(answer_mac)
+
     def test_a_malformed_launch_id_gets_a_signed_404_like_an_unknown_one(self):
         launcher = LauncherClient(self.port)
         launcher.hello()
@@ -360,7 +375,7 @@ def mock_driven(web, value):
 class LogLabelTests(WebCase):
     def test_logs_carry_fixed_labels_and_no_path_id_title_message_or_secret(self):
         bridge_log = logging.getLogger(chat_bridge.__name__)
-        with self.assertLogs(bridge_log, level=logging.INFO) as captured:
+        with self.assertLogs(bridge_log, level=logging.DEBUG) as captured:
             launcher = LauncherClient(self.port)
             launcher.hello()
             status, launch, _mac = launcher.launch({"document_id": "lo:secretdoc:1", "title": "Quarterly-secret.ods",
@@ -384,6 +399,34 @@ class LogLabelTests(WebCase):
                        "secretdoc", "Quarterly", "hidden-message", "/ui/index.html", "/api/", "/launcher/",
                        launcher.channel):
             self.assertNotIn(secret, text)
+
+    def test_state_polls_and_static_files_are_logged_at_debug_refusals_at_info(self):
+        bridge_log = logging.getLogger(chat_bridge.__name__)
+        page = self.page()
+        with self.assertLogs(bridge_log, level=logging.DEBUG) as captured:
+            for _ in range(3):   # an idle window polls its state every 3 s
+                self.assertEqual(page.state()[0], 200)
+            raw_request(self.port, "GET", "/ui/index.html", headers=[("Host", f"127.0.0.1:{self.port}")])
+            raw_request(self.port, "GET", "/ui/missing.js", headers=[("Host", f"127.0.0.1:{self.port}")])
+            raw_request(self.port, "GET", "/api/state", headers=[(("Host", f"127.0.0.1:{self.port}"))])
+            eventually(lambda: sum(" -> " in line for line in captured.output) >= 6)
+        lines = [line.split(":", 2) for line in captured.output]
+        levels = {}
+        for level, _name, message in lines:
+            if " -> " not in message:
+                continue
+            label_status = message.split(" ", 3)[3].rsplit(" in ", 1)[0]
+            levels.setdefault(label_status, set()).add(level)
+        self.assertEqual(levels.get("api-state -> 200"), {"DEBUG"})
+        self.assertEqual(levels.get("ui-static -> 200"), {"DEBUG"})
+        self.assertEqual(levels.get("ui-static -> 404"), {"INFO"}, "a refusal stays at INFO")
+        self.assertEqual(levels.get("api-state -> 403"), {"INFO"}, "a refused poll stays at INFO")
+        status, value, _mac = self.launcher().launch({"document_id": "other", "title": "t.ods", "type": "calc"})
+        with self.assertLogs(bridge_log, level=logging.INFO) as captured:
+            PageClient(self.port).exchange(code_of(value["url"]))
+            eventually(lambda: any(" api-session -> " in line for line in captured.output))
+        self.assertTrue(any(line.startswith("INFO:") and " api-session -> 200" in line for line in captured.output),
+                        "other answers stay at INFO")
 
 
 if __name__ == "__main__":
