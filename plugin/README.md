@@ -32,7 +32,7 @@ macOS (Terminal):
 
 ```sh
 cd ~
-git clone --depth 1 --branch v0.4.0 https://github.com/AtlasOmnia/sidecar-libreoffice.git
+git clone --depth 1 --branch v0.4.1 https://github.com/AtlasOmnia/sidecar-libreoffice.git
 cd sidecar-libreoffice
 python3 scripts/build_oxt.py              # writes dist/sidecar-libreoffice.oxt
 shasum -a 256 dist/sidecar-libreoffice.oxt
@@ -42,15 +42,15 @@ Windows (PowerShell):
 
 ```powershell
 cd $env:USERPROFILE
-git clone --depth 1 --branch v0.4.0 https://github.com/AtlasOmnia/sidecar-libreoffice.git
+git clone --depth 1 --branch v0.4.1 https://github.com/AtlasOmnia/sidecar-libreoffice.git
 cd sidecar-libreoffice
 py scripts\build_oxt.py                   # writes dist\sidecar-libreoffice.oxt
 Get-FileHash dist\sidecar-libreoffice.oxt -Algorithm SHA256
 ```
 
-Expected SHA-256 of `sidecar-libreoffice.oxt` for v0.4.0: `9322ca9cbb2acc17bd874c9dbef1a11f8a35b3d57a27d38cd97e027be579ab8d`. The archive is stored uncompressed with fixed metadata, so any CPython 3.9 or later on macOS or Windows builds these bytes from the `v0.4.0` tag (checked with 3.9 to 3.14 on macOS and python.org 3.11 to 3.14 on Windows 11).
+Expected SHA-256 of `sidecar-libreoffice.oxt` for v0.4.1: `d440e7f860665f51cab7098aa36d63e4a3723de6b623ffecc797768c17686147`. The archive is stored uncompressed with fixed metadata, so any CPython 3.9 or later on macOS or Windows builds these bytes from the `v0.4.1` tag (checked with 3.9, 3.11 and 3.13 on macOS and python.org 3.11 to 3.14 on Windows 11).
 
-In LibreOffice choose **Tools → Extensions…** (**Extension Manager…** in older versions) **→ Add…**, pick `dist/sidecar-libreoffice.oxt` (Windows: `%USERPROFILE%\sidecar-libreoffice\dist\sidecar-libreoffice.oxt`) and accept any prompt. Opening the `.oxt` file with LibreOffice (double-click) does the same. Check that **Sidecar for LibreOffice** 0.4.0 by Atlas Omnia is listed and enabled, then choose **Close**; when LibreOffice asks to restart, choose **Restart Now**, or **Restart Later** and then quit and reopen LibreOffice. Do not use `unopkg add`.
+In LibreOffice choose **Tools → Extensions…** (**Extension Manager…** in older versions) **→ Add…**, pick `dist/sidecar-libreoffice.oxt` (Windows: `%USERPROFILE%\sidecar-libreoffice\dist\sidecar-libreoffice.oxt`) and accept any prompt. Opening the `.oxt` file with LibreOffice (double-click) does the same. Check that **Sidecar for LibreOffice** 0.4.1 by Atlas Omnia is listed and enabled, then choose **Close**; when LibreOffice asks to restart, choose **Restart Now**, or **Restart Later** and then quit and reopen LibreOffice. Do not use `unopkg add`.
 
 If an earlier build of the extension is installed (0.3.x or a 0.4.0 pre-release, listed as **Sidecar for LibreOffice** or **Hermes for LibreOffice**): the 0.4.0 extension has a new identifier, so LibreOffice installs it alongside the old one, and both would try to listen on port 8660. Remove the old one in the same dialog, before adding the new one or right after (select it, **Remove**, **Close**, **Restart Later**, then quit and reopen LibreOffice). Two identical **Sidecar for LibreOffice 0.4.0** rows are told apart by the description of the selected row: this release's ends with the Apache License line. After the upgrade LibreOffice may first show its Properties deck; click the green **S** tab once to open Sidecar. Your pairing token stays where it was, so an existing pairing keeps working.
 
@@ -114,7 +114,7 @@ The defaults need no setting. If you change one, change both sides:
 ## Risk disclosures
 
 - **Loopback listeners.** By default only the extension's listener runs: `127.0.0.1:8660` inside LibreOffice, from LibreOffice's first window until it quits. The plugin's sidebar chat endpoint is off by default; once you set `chat_port` (8661) it listens on `127.0.0.1:8661` inside the Hermes gateway process, from when the gateway loads the plugin until the plugin is disabled or reloaded or Hermes exits. Both accept a request only with the pairing token, refuse any `Origin` header and require `Host` to be the loopback address and port, and bound connections and read time.
-- **Plain HTTP, bearer secrets.** Both listeners are plain HTTP on loopback and authenticate only the client. The plugin sends the pairing token to whatever listens on port 8660, the panel sends it to whatever listens on 8661 (also while the sidebar chat is off: when the panel opens and when you send a message), and the chat endpoint sends `API_SERVER_KEY` to whatever listens on the API server port. A local process that takes one of those ports while the real listener is down could receive that secret. Use this on a computer whose other accounts and programs you trust.
+- **Plain HTTP, bearer secrets.** Both listeners are plain HTTP on loopback and authenticate only the client. The plugin sends the pairing token to whatever listens on port 8660, the panel sends it to whatever listens on 8661 (also while the sidebar chat is off: when the panel opens and when you send a message), and the chat endpoint sends `API_SERVER_KEY` to whatever listens on the API server port. A local process that takes one of those ports while the real listener is down could receive that secret. On Windows both listeners bind 127.0.0.1 on their port with `SO_EXCLUSIVEADDRUSE` (since 0.4.1), so while they listen a second socket cannot bind that same address and port; with `SO_REUSEADDR`, which 0.4.0 used, it could (both seen on Windows 11 with a second socket of the same account). A bind of the same port number on the wildcard address (`0.0.0.0`) still succeeds; in that check such a socket did not receive a connection made to 127.0.0.1. Taking a port while its listener is down is still possible on every system. Use this on a computer whose other accounts and programs you trust.
 - **Stored secrets.** The extension creates the pairing token in the LibreOffice profile (`user/hermes-bridge/token`, owner-only; on Windows a protected DACL). Hermes keeps a copy as `LIBREOFFICE_LIVE_BRIDGE_TOKEN` in the profile's `.env`. The plugin reads it and `API_SERVER_KEY` only through Hermes's `agent.secret_scope.get_secret`, keeps them in memory, and never logs them or sends the API key to LibreOffice. It reads no credential files.
 - **What a panel chat is.** It is a chat with your full Hermes agent: its model, memory and persona. A `pre_tool_call` hook limits its tools to this plugin's 55 document tools plus the read-only `skill_view`, `skills_list`, `tool_search` and `tool_describe`; everything else (terminal, files, web, delegation) is refused. Anything that can read the pairing token file as you can chat with your Hermes model (using your model credits) and read or edit your open documents through it.
 - **Where the fence does not reach.** External-agent runtimes are unsupported for restricted sidebar chat: if the profile's model runtime is an external agent (for example `codex_app_server`), that agent's built-in tools never pass through Hermes's hooks, so panel chats would not be fenced at all. Keep `chat_port: 0` there; the dedicated-profile recipe restricts Hermes tools only. Another known gap is listed in [SECURITY.md](../SECURITY.md): an older, non-default API execution mode after a session compaction.

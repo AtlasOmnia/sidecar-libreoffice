@@ -1,4 +1,4 @@
-Sidecar for LibreOffice 0.4.0 (LibreOffice extension)
+Sidecar for LibreOffice 0.4.1 (LibreOffice extension)
 by Atlas Omnia
 
 Starts an authenticated loopback-only bridge inside LibreOffice. Hermes tools operate only on explicitly bound open Calc, Writer, or Impress documents.

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Atlas Omnia
 name: atlas-sidecar-libreoffice
-version: 0.4.0
+version: 0.4.1
 description: "Sidecar for LibreOffice by Atlas Omnia: 55 tools for the Calc, Writer and Impress documents open in LibreOffice, through the companion extension's token-checked listener on 127.0.0.1:8660, plus an optional token-checked sidebar chat endpoint inside the Hermes gateway (off by default; chat_port 8661 turns it on) that forwards to your Hermes API server."
 author: AtlasOmnia
 license: Apache-2.0

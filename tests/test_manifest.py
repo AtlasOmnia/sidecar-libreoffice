@@ -95,11 +95,11 @@ class ManifestRegistrationTests(unittest.TestCase):
         manifest = (ROOT / "plugin" / "plugin.yaml").read_text(encoding="utf-8")
         extension = (ROOT / "extension" / "description.xml").read_text(encoding="utf-8")
         catalog = (ROOT / "catalog" / "atlas-sidecar-libreoffice.yaml").read_text(encoding="utf-8")
-        self.assertIn("version: 0.4.0", manifest)
-        self.assertIn('<version value="0.4.0"/>', extension)
-        self.assertIn('version: "0.4.0"', catalog)
+        self.assertIn("version: 0.4.1", manifest)
+        self.assertIn('<version value="0.4.1"/>', extension)
+        self.assertIn('version: "0.4.1"', catalog)
         # The text shipped inside the .oxt names the same version.
-        self.assertTrue((ROOT / "extension" / "README.txt").read_text(encoding="utf-8").startswith("Sidecar for LibreOffice 0.4.0 "))
+        self.assertTrue((ROOT / "extension" / "README.txt").read_text(encoding="utf-8").startswith("Sidecar for LibreOffice 0.4.1 "))
         self.assertIn('server_version = "SidecarLibreOfficeBridge/0.4"',
                       (ROOT / "extension" / "python" / "hermes_bridge.py").read_text(encoding="utf-8"))
 

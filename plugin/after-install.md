@@ -6,7 +6,7 @@ The plugin is installed. It needs its companion **LibreOffice extension**, which
 2. **Build the extension from the release tag** (Python 3.9+; Windows: use `py` and `scripts\build_oxt.py`):
 
    ```
-   git clone --depth 1 --branch v0.4.0 https://github.com/AtlasOmnia/sidecar-libreoffice.git
+   git clone --depth 1 --branch v0.4.1 https://github.com/AtlasOmnia/sidecar-libreoffice.git
    cd sidecar-libreoffice
    python3 scripts/build_oxt.py --check
    ```
