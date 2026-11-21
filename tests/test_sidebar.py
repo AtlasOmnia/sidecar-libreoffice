@@ -247,7 +247,9 @@ class LauncherPanelTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.folder = Path(self.temp.name) / "hermes-bridge"
+        # Resolved: macOS's default temp folder is under /var, a symlink, and the preference walk
+        # refuses symlinked ancestors (as it did in 0.4.0, whose test resolved the folder too).
+        self.folder = Path(self.temp.name).resolve() / "hermes-bridge"
         self.folder.mkdir(mode=0o700)
         self.ctx = Context(self.folder)
         self.launcher = FakeLauncher()
