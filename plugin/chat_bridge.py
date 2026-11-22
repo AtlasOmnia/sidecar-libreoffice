@@ -108,7 +108,7 @@ TURN_WORKER_FAILED = "the chat endpoint could not start this reply; try again sh
 ENDPOINT_BUSY = "endpoint_busy"
 # Answers that are logged at DEBUG when they succeed: an idle Sidecar window polls its state every
 # 3 s and a page load fetches its files; every other answer and every refusal is logged at INFO.
-QUIET_LABELS = ("api-state", "ui-static")
+QUIET_LABELS = ("api-state", "ui-static", "launcher-bounds", "api-window")
 # Headers that carry a credential of the 0.5.0 Sidecar window or launcher (docs/web-protocol.md 1.2):
 # the legacy pair (/health, /chat) refuses a request that carries any of them, or any Sec-Fetch-*.
 FOREIGN_TO_LEGACY = ("x-sidecar-session", "x-sidecar-channel", "x-sidecar-counter", "x-sidecar-mac")
