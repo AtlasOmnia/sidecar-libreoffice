@@ -1242,7 +1242,8 @@ class BoundedHTTPServer(ThreadingHTTPServer):
         if _WINDOWS:
             # Windows: SO_REUSEADDR (the stdlib default here) would let another socket, even one of
             # another account, bind this address and port while the listener is up and receive
-            # some of its connections. SO_EXCLUSIVEADDRUSE refuses every second bind instead.
+            # some of its connections. SO_EXCLUSIVEADDRUSE refuses a second bind to this
+            # same specific address and port; it is not a claim about every wildcard bind.
             self.allow_reuse_address = False
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)  # type: ignore[attr-defined]
         super().server_bind()
