@@ -1,3 +1,0 @@
-# Contract revision 5 clarifications
-
-The refined plan requested 6.4's number form for window seq, while section 2 defines window seq through 2147483647 (6.4 turn seq stops at 200000). Revision 5 uses the same canonical decimal/no-leading-zero form with the window range, explicitly in 6.9. Initial seq 0 snapshot is hidden/null, never normal/null. Owner default OFF changes only page preference, not capability negotiation; otherwise Settings would be unreachable on first launch. Unsafe-cache sentence fixed to README ▸ Which browser, an existing heading, for C1/D. These are Day-0 freeze clarifications, not post-freeze amendments.

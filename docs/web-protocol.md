@@ -1078,8 +1078,12 @@ XTopWindowListener lives in hermes_sidebar.py, registry keyed by document, never
 Bind to the launching frame, not current document. Stop on frame disposal, document close or
 replacement in that frame, and quit; check binding immediately before send. Closing the deck
 does not stop following. A second same-document frame never takes over; closing the followed
-frame emits window_closed and ends following even if document remains open. A crash cannot
-rebind the old Sidecar; close/open again. On Windows nothing attaches or sends a follow key;
+frame publishes window_closed locally and immediately fences following even if the document
+remains open. This terminal mailbox value is best-effort, not a wire-delivery guarantee:
+close cancels pending bounds admissions, and a document_closed release authoritatively ends
+the Sidecar session. Never delay the main thread or permit post-close bounds requests to
+flush a terminal snapshot. An already admitted request may finish, but cannot revive the
+binding. A crash cannot rebind the old Sidecar; close/open again. On Windows nothing attaches or sends a follow key;
 adapter interfaces unchanged. Support kill switch HERMES_LO_SIDECAR_NO_FOLLOW=1 suppresses
 negotiation (independent of NO_NATIVE). Clicking Open Sidecar on an undocked window only raises.
 

@@ -116,6 +116,29 @@ class FollowTests(unittest.TestCase):
     def change(self, x):
         self.handle.update((x, 200, 700, 600), 'normal', AREA)
 
+    def test_terminal_snapshot_is_canceled_by_close_fence(self):
+        self.send_first()
+        before = list(self.clients[-1].calls)
+        self.handle.update(None, 'window_closed', AREA)
+        self.handle.close()
+        self.clock.advance()
+        self.assertIsNone(self.pump())
+        self.assertEqual(self.clients[-1].calls, before)
+        self.assertFalse(self.handle.alive)
+        self.assertIsNone(self.handle._binding)
+
+    def test_cold_hello_first_bounds_respects_total_request_budget(self):
+        self.pump()
+        self.clock.advance(.099)
+        self.pump()
+        self.assertEqual(self.starts, [100.0])
+        self.clock.advance(.001001)
+        self.pump()
+        self.assertEqual(len(self.starts), 2)
+        self.assertGreaterEqual(self.starts[1] - self.starts[0], .1)
+        self.assertLess(self.starts[1] - self.starts[0], .15)
+        self.assertEqual(self.clients[-1].calls[-1][0], '/launcher/bounds')
+
     def test_one_handle_per_document_and_attach_after_close(self):
         self.assertIs(self.handle, self.engine.attach('doc'))
         self.handle.close()
