@@ -551,7 +551,7 @@ class _Cancelled(Exception):
 class _Launch:
     """One Open Sidecar click for one document, from the click until its worker ends."""
 
-    __slots__ = ("document_id", "cancelled", "spawning", "client", "follow")
+    __slots__ = ("document_id", "cancelled", "spawning", "client", "follow", "generation", "closed_at")
 
     def __init__(self, document_id: str) -> None:
         self.document_id = document_id
@@ -559,6 +559,8 @@ class _Launch:
         self.spawning = False    # the browser (or the default handler) is being started right now
         self.client: LauncherClient | None = None
         self.follow: Any = None
+        self.generation = 0
+        self.closed_at: float | None = None
 
 
 class Launcher:
@@ -594,6 +596,10 @@ class Launcher:
         self._follower: Any = None
         self._follow_handles: dict[str, Any] = {}
         self._follow_listeners: dict[str, Callable[[], None]] = {}
+        self._generations: dict[str, int] = {}
+        # Worker-only I/O gates: never acquired from a UNO callback. A reopened document
+        # mints only after any older release in flight has completed.
+        self._release_gates: dict[str, Any] = {}
 
     @property
     def adapter(self) -> Any:
@@ -670,6 +676,8 @@ class Launcher:
             if self._terminated or (running is not None and not running.cancelled):
                 return False
             launch = self._launches[key] = _Launch(key)
+            launch.generation = self._generations[key] = self._generations.get(key, 0) + 1
+            self._release_gates.setdefault(key, threading.Lock())
             if self._platform == "darwin" and os.environ.get("HERMES_LO_SIDECAR_NO_FOLLOW") != "1":
                 launch.follow = follow
         report(OPENING, True)
@@ -712,7 +720,8 @@ class Launcher:
             if terminated:
                 client.release(None, "host_quit")
             else:
-                client.release(launch.document_id, "document_closed")
+                self._release_closed(launch.document_id, launch.generation,
+                                     launch.closed_at if launch.closed_at is not None else self._clock())
         except Exception:
             pass
         raise _Cancelled()
@@ -720,17 +729,18 @@ class Launcher:
     def _launch(self, launch: _Launch, document: dict[str, Any], host_scheme: str | None,
                 frame: tuple[int, int, int, int] | None, work_area: tuple[int, int, int, int] | None) -> str:
         adapter = self.adapter
-        client = launch.client = self._new_client()
-        self._hello(client)
-        self._check(launch)  # closed during hello: nothing was minted
-        browsers = list(adapter.find_browsers())
-        mode = "app" if browsers else "tab"
-        bounds = compute_bounds(frame, work_area) if mode == "app" else None
-        eligible = (launch.follow is not None and launch.follow.alive and mode == "app"
-                    and "window_follow" in getattr(client, "caps", ())
-                    and os.environ.get("HERMES_LO_SIDECAR_NO_FOLLOW") != "1")
-        answer = (client.launch(document, host_scheme, mode, bounds, follow=True) if eligible else
-                  client.launch(document, host_scheme, mode, bounds))
+        with self._release_gates[launch.document_id]:
+            client = launch.client = self._new_client()
+            self._hello(client)
+            self._check(launch)  # closed during hello: nothing was minted
+            browsers = list(adapter.find_browsers())
+            mode = "app" if browsers else "tab"
+            bounds = compute_bounds(frame, work_area) if mode == "app" else None
+            eligible = (launch.follow is not None and launch.follow.alive and mode == "app"
+                        and "window_follow" in getattr(client, "caps", ())
+                        and os.environ.get("HERMES_LO_SIDECAR_NO_FOLLOW") != "1")
+            answer = (client.launch(document, host_scheme, mode, bounds, follow=True) if eligible else
+                      client.launch(document, host_scheme, mode, bounds))
         if answer["window_live"]:
             self._check(launch)  # nothing minted; the close hook releases a window it opened
             pid = self._live_browser()
@@ -866,18 +876,51 @@ class Launcher:
             launch = self._launches.get(document_id)
             if launch is not None:
                 launch.cancelled = True
+                launch.closed_at = self._clock()
             if document_id not in self._opened:
                 return
             self._opened.discard(document_id)
+            generation = self._generations.get(document_id, 0)
+            closed_at = self._clock()
 
-        def run() -> None:
-            try:
-                client = self._new_client()
-                self._hello(client)
-                client.release(document_id, "document_closed")
-            except Exception:
-                return
-        self._start(run, "SidecarRelease")
+        self._start(lambda: self._release_closed(document_id, generation, closed_at), "SidecarRelease")
+
+    def _release_closed(self, document_id: str, generation: int, closed_at: float) -> None:
+        """E03: initial close plus three new-channel attempts, within four seconds.
+
+        A signed release answer (including refusal) is final. Only no-answer/unsigned busy
+        permits retry. The worker-only gate orders an in-flight release before a reopened
+        document's mint; generations cancel every stale retry, including abandoned launches.
+        """
+        with self._lock:
+            gate = self._release_gates.setdefault(document_id, threading.Lock())
+        for offset in (0.0, 0.5, 1.5, 3.5):
+            remaining = closed_at + offset - self._clock()
+            if remaining > 0:
+                self._sleep(remaining)
+            with gate:
+                with self._lock:
+                    if self._terminated or self._generations.get(document_id, 0) != generation:
+                        return
+                left = closed_at + 4.0 - self._clock()
+                if left <= 0:
+                    return
+                deadline = time.monotonic() + min(0.5, left)
+                try:
+                    client = self._new_client(timeout=0.5, deadline=deadline)
+                    self._hello(client)
+                    with self._lock:
+                        if self._terminated or self._generations.get(document_id, 0) != generation:
+                            return
+                    client.release(document_id, "document_closed")
+                    return  # every authenticated answer is final, whatever its status
+                except LauncherBusy:
+                    continue
+                except LauncherError as exc:
+                    if str(exc) not in (CHAT_OFF, NO_ANSWER.format(port=self._port())):
+                        return
+                except Exception:
+                    return
 
     def on_terminate(self) -> None:
         """LibreOffice is quitting: cancel launches in flight, release every window, ask the

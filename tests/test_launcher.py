@@ -851,6 +851,72 @@ class FollowWiring(unittest.TestCase):
         self.assertEqual(L.compute_bounds((-1000, 100, 800, 600), (0, 0, 2560, 1080))["x"], -200)
 
 
+class CloseReleaseRetries(unittest.TestCase):
+    setUp = StateMachine.setUp
+    launcher = StateMachine.launcher
+    report = StateMachine.report
+
+    def test_three_absolute_retries_new_channels_and_fixed_deadlines(self):
+        launcher = self.launcher()
+        document_id = DOCUMENT["document_id"]
+        attempts = []
+        from unittest.mock import Mock
+        def make(timeout=L.CALL_TIMEOUT_SECONDS, deadline=None):
+            attempts.append((self.clock(), timeout, deadline))
+            client = Mock(port=12345)
+            client.hello.return_value = {}
+            client.release.side_effect = L.LauncherBusy()
+            return client
+        launcher._new_client = make
+        launcher._opened.add(document_id)
+        launcher.on_document_closed(document_id)
+        self.assertEqual([round(t - 1000, 3) for t, _, _ in attempts], [0, 0.5, 1.5, 3.5])
+        self.assertTrue(all(timeout == 0.5 and deadline is not None for _, timeout, deadline in attempts))
+
+    def test_signed_answer_is_final_including_a_refusal(self):
+        launcher = self.launcher()
+        launcher._opened.add(DOCUMENT["document_id"])
+        # release() returns zero for a signed non-200; zero must never trigger retries.
+        self.client.release = lambda *_: 0
+        launcher.on_document_closed(DOCUMENT["document_id"])
+        self.assertEqual(len([c for c in self.client.calls if c[0] == "new"]), 1)
+        self.assertEqual(self.clock.sleeps, [])
+
+    def test_no_answer_retries_but_bad_proof_does_not(self):
+        for message, count in ((L.CHAT_OFF, 4), (L.NO_ANSWER.format(port=8661), 4), (L.NOT_YOURS.format(port=8661), 1)):
+            launcher = self.launcher()
+            self.client.hello = lambda: (_ for _ in ()).throw(L.LauncherError(message))
+            launcher._opened.add(DOCUMENT["document_id"])
+            launcher.on_document_closed(DOCUMENT["document_id"])
+            self.assertEqual(len([c for c in self.client.calls if c[0] == "new"]), count)
+
+    def test_quit_or_reopen_cancels_next_retry(self):
+        for change in ("quit", "reopen"):
+            launcher = self.launcher()
+            document_id = DOCUMENT["document_id"]
+            launcher._opened.add(document_id)
+            self.client.release = lambda *_: (_ for _ in ()).throw(L.LauncherBusy())
+            def sleep(seconds):
+                self.clock.sleep(seconds)
+                if change == "quit":
+                    launcher._terminated = True
+                else:
+                    launcher._generations[document_id] = 1
+            launcher._sleep = sleep
+            launcher.on_document_closed(document_id)
+            self.assertEqual(len([c for c in self.client.calls if c[0] == "new"]), 1)
+
+    def test_abandoned_launch_uses_the_same_retry_budget(self):
+        launcher = self.launcher()
+        launch = L._Launch(DOCUMENT["document_id"])
+        launch.closed_at = self.clock()
+        from unittest.mock import Mock
+        original = launcher._release_closed = Mock()
+        with self.assertRaises(L._Cancelled):
+            launcher._abandon(self.client, launch, None)
+        original.assert_called_once_with(DOCUMENT["document_id"], 0, self.clock())
+
+
 class BusyAnswers(unittest.TestCase):
     """The plugin's busy refusal (every request slot in use) gets its own panel text. A 503
     without a code means busy only from a port that already proved to be a 0.5.0 plugin."""
