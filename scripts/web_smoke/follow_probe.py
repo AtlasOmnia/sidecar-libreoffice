@@ -19,8 +19,8 @@ import targets
 RECT = {"x": 900, "y": 120, "width": 400, "height": 600}
 
 
-def run(target):
-    checks = []
+def run(target, checks=None):
+    checks = [] if checks is None else checks
     def check(label, ok, observed=None):
         checks.append({"label": label, "ok": bool(ok), "observed": observed})
     def expect(label, response, status, code=None):
@@ -111,7 +111,7 @@ def main():
     else: target = targets.StubTarget(bundle, fast=False, repo=args.repo)
     result = {"target": args.target, "checks": [], "status": "error"}
     try:
-        result["checks"] = run(target)
+        run(target, result["checks"])
         result["status"] = "pass" if all(c["ok"] for c in result["checks"]) else "fail"
     except Exception as exc:
         result["error"] = type(exc).__name__ + ": " + str(exc)

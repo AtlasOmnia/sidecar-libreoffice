@@ -167,7 +167,7 @@ FORBIDDEN = {
 
 # -- section 11: log labels -----------------------------------------------------------------
 LOG_LABELS = ("health", "chat", "launcher-hello", "launcher-launch", "launcher-status", "launcher-release",
-              "ui-static", "api-session", "api-state", "api-chat", "api-turn", "api-stop", "api-new-chat",
+              "launcher-bounds", "api-window", "ui-static", "api-session", "api-state", "api-chat", "api-turn", "api-stop", "api-new-chat",
               "api-close", "method", "unknown")
 
 # -- section 9: machine codes ---------------------------------------------------------------
@@ -178,7 +178,7 @@ CODES = {
     "channel_limit": 429, "too_many_launches": 429, "session_cap": 429, "launch_expired": 401,
     "launch_double_use": 401, "no_session": 401, "busy": 409, "unresolved": 409, "too_many": 429,
     "plugin_inactive": 503, "worker_failed": 503, "message_invalid": 400, "unknown_turn": 404,
-    "turn_running": 409, "turned_off": 503, "internal": 500, "endpoint_busy": 503, "already_sent": 409,
+    "no_follow": 404, "attachment_stale": 409, "turn_running": 409, "turned_off": 503, "internal": 500, "endpoint_busy": 503, "already_sent": 409,
 }
 END_REASONS = ("closed", "replaced", "host_gone", "turned_off", "idle", "double_use", "evicted")
 
@@ -203,7 +203,7 @@ APPROVAL_TEXT = ("Hermes asked for an approval that Sidecar cannot give. Press S
 DOM_IDS = ("app-title", "settings-button", "connection-status", "privacy-badge", "desk-connect",
            "desk-connect-text", "desk-connect-code", "desk-connect-button", "bridge-status", "bridge-session-id",
            "new-chat-button", "messages", "prompt-input", "stop-button", "send-button", "settings-dialog",
-           "close-settings-button", "save-settings-button", "bridge-url", "document-line")
+           "close-settings-button", "save-settings-button", "bridge-url", "document-line", "follow-status", "reattach-button", "follow-toggle")
 
 # -- section 5: bootstrap file --------------------------------------------------------------
 LAUNCH_URL_RE_TEMPLATE = r"^http://127\.0\.0\.1:{port}/ui/index\.html#launch=[A-Za-z0-9_-]{{43}}$"

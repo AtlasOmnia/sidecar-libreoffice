@@ -126,6 +126,8 @@ class Chrome:
                 self._event_cv.wait(left)
 
     def close(self) -> None:
+        socket_link = self.profile / "SingletonSocket"
+        socket_directory = socket_link.resolve(strict=False).parent if socket_link.is_symlink() else None
         try:
             self.send("Browser.close", timeout=5)
         except Exception:  # noqa: BLE001 - closing anyway
@@ -136,6 +138,9 @@ class Chrome:
             self.proc.kill()
             self.proc.wait(timeout=5)
         shutil.rmtree(self.profile, ignore_errors=True)
+        # Only the outside-profile socket directory referenced by THIS owned profile.
+        if socket_directory and str(socket_directory).startswith(("/var/folders/", "/private/var/folders/")) and socket_directory.name.startswith(("org.chromium.", ".com.google.Chrome.")):
+            shutil.rmtree(socket_directory, ignore_errors=True)
 
 
 class Page:

@@ -71,10 +71,13 @@ def table(results: list[dict]) -> str:
 
 
 def environment(repo: Path) -> dict[str, Any]:
-    commit = subprocess.run(["git", "-C", str(repo), "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+    commit = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     return {"when": datetime.datetime.now().astimezone().isoformat(timespec="seconds"), "python": platform.python_version(),
             "os": f"{platform.system()} {platform.release()} {platform.machine()}", "commit": commit,
-            "vectors_ok": contract.check_vectors() == []}
+            "vectors_ok": contract.check_vectors() == [],
+            "protocol_sha256": hashlib.sha256((repo / "docs/web-protocol.md").read_bytes()).hexdigest(),
+            "dirty_paths": subprocess.run(["git", "-C", str(repo), "status", "--porcelain"],capture_output=True,text=True).stdout.splitlines(),
+            "evidence_scope": "bounded listed checks only; not G1-G7 completion or release acceptance"}
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -82,14 +85,21 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--evidence", required=True)
     ap.add_argument("--vendor-from", help="folder holding vendor/marked.umd.js and vendor/purify.js (pinned)")
     ap.add_argument("--ui-dir", help="the real page bundle (plugin/sidebar); default: the fixture only")
-    ap.add_argument("--target", default="stub", choices=["stub", "plugin"])
+    ap.add_argument("--target", default="stub", choices=["stub", "plugin", "external"])
     ap.add_argument("--plugin-factory", default="plugin_factory:make_endpoint")
     ap.add_argument("--repo", default=str(HERE.parents[1]))
     ap.add_argument("--slow", action="store_true")
     ap.add_argument("--skip-browser", action="store_true")
     ap.add_argument("--skip-probes", action="store_true")
+    ap.add_argument("--require-real-browser", action="store_true", help="fail closed unless real plugin/external sidebar browser checks run")
+    ap.add_argument("--port", type=int, help="disposable ExternalTarget endpoint")
+    ap.add_argument("--token-file", type=Path)
     ap.add_argument("--run", help="run name (default: <date>-<target>-<bundles>)")
     args = ap.parse_args(argv)
+    if args.require_real_browser and (args.target == "stub" or args.skip_browser or not args.ui_dir):
+        ap.error("--require-real-browser needs --target plugin/external, --ui-dir, and browser execution")
+    if args.target == "external" and (not args.port or not args.token_file):
+        ap.error("external needs --port and --token-file for a disposable endpoint")
     evidence = Path(args.evidence)
     evidence.mkdir(parents=True, exist_ok=True)
     repo = Path(args.repo)
@@ -116,6 +126,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         return evidence / gate / run
 
     def make_target(bundle: Path) -> Any:
+        if args.target == "external":
+            return targets.ExternalTarget(args.port, args.token_file)
         if args.target == "plugin":
             return targets.PluginTarget(bundle, args.plugin_factory, repo)
         return targets.StubTarget(bundle, fast=True, repo=repo)
@@ -170,6 +182,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     (evidence / f"SUMMARY-{run}.md").write_text(redact("\n".join(lines)), encoding="utf-8")
     shutil.rmtree(work, ignore_errors=True)
     ok = all(r["status"] in ("pass", "skip", "info") for r in probe_results + browser_results)
+    if args.require_real_browser:
+        ok = ok and bool(browser_results) and any(r.get("status") == "pass" for r in browser_results) and not any(r.get("status") == "skip" for r in browser_results)
     print(f"evidence written to {evidence}; probes {tally(probe_results)}, browser {tally(browser_results)}, "
           f"negative control detected: {negative.get('detected')}")
     return 0 if ok else 1

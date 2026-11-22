@@ -146,7 +146,7 @@ class Session:
         self.follow = rec.follow
         self.launch_id = rec.launch_id
         self.window = {"seq": 0, "state": "hidden", "bounds": None}
-        self.window_poller = None
+        self.window_poller: Optional[object] = None
         self.chat_id = "lo-" + secrets.token_hex(16)
         self.last_seen = time.monotonic()
         self.turn: Optional[Turn] = None
@@ -1077,7 +1077,7 @@ def cmd_open(args: argparse.Namespace) -> None:
     info, token, state = _state(args)
     document = {"document_id": args.document_id, "title": args.title, "type": args.type}
     bounds = None if args.mode == "tab" else {"x": args.x, "y": args.y, "width": 400, "height": 848}
-    launch_id, url = open_launch(info["port"], token, document, mode=args.mode, bounds=bounds)
+    launch_id, url = open_launch(info["port"], token, document, mode=args.mode, bounds=bounds, follow=True if args.follow else None)
     folder = _private_dir(state / "launch")
     path = folder / f"launch-{secrets.token_hex(16)}.html"
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -1133,6 +1133,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     o.add_argument("--x", type=int, default=1240)
     o.add_argument("--y", type=int, default=102)
     o.add_argument("--chrome", action="store_true")
+    o.add_argument("--follow", action="store_true", help="negotiate follow (page preference remains OFF)")
     c = sub.add_parser("ctl")
     c.add_argument("--state-dir", required=True)
     c.add_argument("command", choices=["unload", "ready", "release", "heal", "token"])

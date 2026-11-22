@@ -532,8 +532,10 @@ def _(c: Ctx) -> None:
     c.check("exchange returns the bound document/scheme/mode/bounds",
             ex["document"] == doc(1) and ex["host_scheme"] == "dark" and ex["mode"] == "app"
             and ex["bounds"] == {"x": -100, "y": 30, "width": 400, "height": 900}, "bound values", "differs")
-    c.check("exchange shape", set(ex) == {"ok", "session", "idle_timeout", "document", "host_scheme", "mode", "bounds",
-                                          "chat", "chat_label", "endpoint", "limits"}
+    legacy_keys = {"ok", "session", "idle_timeout", "document", "host_scheme", "mode", "bounds",
+                   "chat", "chat_label", "endpoint", "limits"}
+    c.check("exchange shape (revision 4/5 mixed-pair compatible)",
+            set(ex) in (legacy_keys, legacy_keys | {"follow"}) and ex.get("follow", False) is False
             and ex["endpoint"] == c.origin and ex["limits"] == {"max_message": 8000}, "section 6.1 keys", sorted(ex))
     label = ex.get("chat_label") or ""
     c.check("chat_label is lo- and 8 hex digits (section 6.1 example \"lo-1a2b3c4d\")",
