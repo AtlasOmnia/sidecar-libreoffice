@@ -30,12 +30,20 @@ Apache-2.0 (see `LICENSE` and `NOTICE`). Keep SPDX headers on new source files, 
 - Writes go to the explicit `document_id`, never to whichever window is in front.
 - `scripts/build_oxt.py` stores every member uncompressed with fixed metadata, so the `.oxt` hash is the same on every platform. A change to `extension/`, `LICENSE` or `NOTICE` needs the new SHA-256 in `README.md` and `plugin/README.md`; `tests/test_packaging.py` checks it.
 
+## Following and evidence
+
+- `docs/web-protocol.md` revision 5 is authoritative. Follow LibreOffice is off by default, remembered only by the page as `sidecar.follow`; absent/invalid/unavailable storage means off. Capability negotiation is independent of that preference. Windows/tab mode must not negotiate following, poll window geometry or move a browser window.
+- Hand movement or resize undocks until Reattach/new session; Reattach restores 400 points wide. Never focus/activate a window during following. No linked minimise or following across Spaces; fullscreen is an ordinary large window. Keep second-display/Retina claims explicitly untested until hardware evidence exists.
+- Retain the completed-read-back guard as well as the 400 ms settle interval; timer expiry alone is not a baseline. No geometry in logs/storage/URLs or from model/document text. Keep main-thread callbacks bounded and free of I/O; workers never read UNO.
+- Do not turn historical, scratch, fake-upstream or unit results into installed/current-candidate claims. Manual screen-reader work is not required for 0.5.1; automated accessibility remains required. Real gateway/model runs require owner authorization, not an agent’s inferred permission.
+- During an Unreleased 0.5.1 draft, preserve both archive-hash placeholders. `build_oxt.py --check` may accept that exact draft seam but says NOT a release hash match. Replace both only after extension/page freeze; then date the release, verify deterministic hashes and rerun candidate gates. Public catalog pins remain pending publication.
+
 ## Before every commit
 
 Run the full suite and keep it green:
 
 ```sh
-python3 -m unittest discover -s tests
+env -u TMPDIR python3 -m unittest discover -s tests
 ```
 
 Releases, tags and catalog pull requests are made by the project maintainers.

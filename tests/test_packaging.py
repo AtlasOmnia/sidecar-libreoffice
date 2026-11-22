@@ -131,7 +131,7 @@ class PluginPackageTests(unittest.TestCase):
         readme = (ROOT / "plugin" / "README.md").read_text(encoding="utf-8")
         after = (ROOT / "plugin" / "after-install.md").read_text(encoding="utf-8")
         for text in (readme, after):
-            self.assertIn("--branch v0.5.0", text)
+            self.assertIn("--branch v0.5.1", text)
             self.assertIn("Copy Sidecar pairing token", text)
             self.assertNotIn("Copy Hermes pairing token", text)
             self.assertIn("Open Sidecar", text)

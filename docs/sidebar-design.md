@@ -7,6 +7,8 @@ Sidecar does in Microsoft Office.
 
 Historical note: this page describes the first sidebar (0.3.0); its *Not verified* and *Remaining work* lists are as of 0.3.0. In 0.5.0 the native chat panel described here is replaced: the sidebar panel becomes a launcher with an **Open Sidecar** button, and the conversation moves to the Sidecar window, a web page served by the plugin and shown in a browser (README, *Sidebar chat* and *Which browser*; the protocol is `docs/web-protocol.md`). The decisions below on credentials and the tool fence still hold; *One reply per message* holds for 0.5.0, while *Plain text* does not: the Sidecar window renders Markdown.
 
+Current 0.5.1 draft: optional macOS following is off by default and remembered in Settings; hand move/resize undocks and Reattach restores 400 points wide. Windows keeps a default-browser tab. See [following](follow-libreoffice.md) and the [release evidence ledger](release-0.5.1.md); the historical design below is not current-candidate verification.
+
 Built:
 
 - A **Hermes** deck in the sidebar of Calc, Writer and Impress (`Sidebar.xcu`, `Factories.xcu`; deck

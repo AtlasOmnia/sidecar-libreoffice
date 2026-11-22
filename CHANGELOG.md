@@ -4,8 +4,33 @@ All notable changes to Sidecar for LibreOffice are documented here. The format f
 
 ## [0.5.1] - Unreleased
 
-Day-0 contract and packaging seams only; optional Follow LibreOffice is OFF by default.
-Implementation and release acceptance are pending.
+**Draft release text, not release acceptance.** The changes below describe the accepted 0.5.1 contract; implementation is delivered by separate lanes and must be checked on the combined frozen candidate. Final hashes, screenshots, release date, private CI and public catalog publication are pending. Older tested results retain their original attribution in the 0.5.0 section.
+
+### Added
+- Optional **Follow LibreOffice** for an eligible macOS app window, **off by default**, separately from chat. Settings remembers the choice in the dedicated browser profile; missing, invalid or unavailable storage means off. No new plugin setting. Tabs and Windows do not follow.
+- Moving **or resizing** Sidecar by hand undocks it until **Reattach** or a new session. Reattach restores 400 points wide. Open Sidecar only raises the browser; it does not reattach or guarantee document-specific focus.
+- Capability negotiation and signed bounds transport, bound to the launching document window, with a shared four-slot reply/window-poll pool and priority for reply polls. The extension’s follow worker coalesces changes, sends at most ten bounds updates per second and renews its own channel. Support can disable it with `HERMES_LO_SIDECAR_NO_FOLLOW=1`.
+
+### Fixed (candidate scope; acceptance pending)
+- Retry unanswered/busy document-close releases at 0.5, 1.5 and 3.5 seconds, stopping after any signed answer or quit. This is bounded recovery, not guaranteed delivery.
+- Distinguish an unsafe cache folder from a browser-launch failure without bypassing private-file checks.
+- Reject trailing newlines and other partial matches in launcher URLs, nonces and bootstrap inputs; reap exited browser hand-off children.
+- Ignore an obsolete state-poll failure after a successful Try again, so it cannot restore a misleading unreachable banner during the reply.
+- Correct Send/Try again wording: deduplication covers the session’s last 64 published message IDs, not permanent exactly-once delivery. Try again may send the message later, not only check.
+- Narrow listener-bind prose to the same address, port and socket options; preserve Windows wildcard and cross-account evidence qualifications.
+
+### Documentation and verification
+- Use the same pinned Omnia styling wording instead of a claim of identical computed layout. Old native-panel images are labelled historical, not presented as the current window; new light/dark screenshots await page freeze. Windows screenshots do not change.
+- Keep Windows 0.5.1 on the default-browser tab; Chrome-first app-window work is a 0.5.2 spike. Edge Startup Boost and raising remain unresolved. No native Linux support claim.
+- Improve browser-failure disclosures, catalog-template status and the [tested/not-run ledger](docs/release-0.5.1.md). Browser harness parity, captured observations and a mandatory real-plugin browser release gate are required; no new CI browser job is promised.
+- Automated accessibility remains required, including Reattach, Settings and focus behavior. Manual VoiceOver and NVDA are not required and remain not run. The owner runs the bounded real-gateway macOS candidate check; fake Runs API checks do not substitute for it.
+
+### Known limits
+- Following is delayed, not rigid docking. Acceptance targets: median ≤150 ms, p95 ≤250 ms, maximum ≤400 ms with one or two windows; up to about 600 ms for fifth and later windows. No 0.5.1 measurement is asserted yet. A drag begun during the 400 ms settle/read-back interval can snap back once.
+- Sidecar does not minimise with LibreOffice; it stays where it is and following pauses while LibreOffice is minimised/hidden. No linked minimise or following across Spaces. Fullscreen is treated as an ordinary large window, possibly overlapping its right edge; native-fullscreen/Space detection is not qualified.
+- Second-display, negative-coordinate, Retina (2×), mixed-scale and display-change behavior are explicitly untested. Intended recovery: pause on another-display targets, move Sidecar there by hand, then Reattach; move/resize or switch off if placement is wrong. No window-management permission prompt.
+- Green-button full screen, Spaces, Stage Manager, tiling, Intel Macs, other macOS/LibreOffice versions, more than eight sessions and multiple frames for one document remain unverified. No rebind after a LibreOffice crash: close the old Sidecar and reopen from LibreOffice. Browser-level raise, stale “already open” after a browser crash, managed-policy failures, tab history/extensions and the disclosed unload tool-fence limitation remain.
+- Source and scratch experiments are not installed acceptance. D2’s 255 quit result was traced by Q255 to harness SIGTERM after first-run Welcome UI, reproducible without an extension; it is not a clean-exit pass or evidence of a Sidecar quit regression. Fresh candidate quit evidence is still required.
 
 ## [0.5.0] - 2026-11-21
 
@@ -62,7 +87,7 @@ A fix release for the two loopback listeners. No tool, setting, port or protocol
 Tested: the unit suite on macOS (Python 3.9, 3.11 and 3.13), in a Linux container (Python 3.11) and on Windows 11 (python.org Python 3.14); on Windows 11 both listeners refused a second socket on their 127.0.0.1 address and port while they listened (with 0.4.0 a second socket that set SO_REUSEADDR could bind it) and bound the same port again at once after a close, 20 times each; `hermes plugins validate --install-deps` with Hermes Agent 0.23.1. Not run for 0.4.1: the `.oxt` installed into LibreOffice, the plugin loaded by a Hermes gateway, and another account's socket on Windows.
 
 ### Fixed
-- **Exclusive ports on Windows.** Both listeners, the extension's bridge on 8660 and the plugin's chat endpoint (8661 when turned on), bind 127.0.0.1 on their port with `SO_EXCLUSIVEADDRUSE` instead of `SO_REUSEADDR`. With `SO_REUSEADDR`, which 0.4.0 used, a second socket could bind the same 127.0.0.1 address and port while the listener ran (seen on Windows 11 for both listeners, with a socket of the same account). That bind is now refused. A bind of the same port number on the wildcard address (`0.0.0.0`) still succeeds; in the same check such a socket did not receive a connection made to 127.0.0.1. macOS and Linux keep `SO_REUSEADDR`, where a second bind of a port in use fails anyway.
+- **Exclusive ports on Windows.** Both listeners, the extension's bridge on 8660 and the plugin's chat endpoint (8661 when turned on), bind 127.0.0.1 on their port with `SO_EXCLUSIVEADDRUSE` instead of `SO_REUSEADDR`. With `SO_REUSEADDR`, which 0.4.0 used, a second socket could bind the same 127.0.0.1 address and port while the listener ran (seen on Windows 11 for both listeners, with a socket of the same account). That bind is now refused. A bind of the same port number on the wildcard address (`0.0.0.0`) still succeeds; in the same check such a socket did not receive a connection made to 127.0.0.1. macOS and Linux keep `SO_REUSEADDR`; a second bind fails for the same address, port and socket options used by these listeners, not necessarily for every wildcard or option combination.
 - **Unload asks runs to stop first.** When the plugin is disabled or reloaded while a sidebar chat runs, the chat endpoint now asks the runs whose IDs it knows to stop before it shuts its listener down, and wakes the listener's accept loop at once instead of waiting out its 0.5-second poll. Waiting for the listener is bounded by what is left of the 10-second budget, and on Hermes's event loop it waits at most 0.05 seconds, so that the port is normally free again when unload returns. In 0.4.0 the listener shutdown came first and took up to 0.5 seconds of the budget (longer while the accept thread was busy) before any stop was sent, and it blocked the event loop for that time; with a short budget a run could be left without a stop request. Unchanged from 0.4.0: a stop can still go out after unload returns. On Hermes's event loop the stops continue in the background within the same budget, a run whose ID arrives only after the budget is asked to stop once, best effort, and a single API call already under way can run somewhat past the budget.
 
 ### Changed

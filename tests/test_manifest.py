@@ -204,5 +204,56 @@ class WindowDisclosureTests(unittest.TestCase):
         self.assertEqual(markers, [])
 
 
+class FollowDisclosureTests(unittest.TestCase):
+    """Draft documentation is not a native acceptance receipt; preserve the public contract."""
+
+    def test_follow_disclosures_keep_the_opt_in_and_recovery_contract(self):
+        for name in DISCLOSURE_FILES + ("extension/README.txt",):
+            text = flat(name).lower()
+            for fact in ("follow libreoffice", "off by default", "remember", "resize", "undock",
+                         "reattach", "400 point", "spaces", "fullscreen", "retina", "untested"):
+                with self.subTest(file=name, fact=fact):
+                    # Markdown uses 400-point in the main README and 400 points elsewhere.
+                    self.assertIn(fact, text.replace("400-point", "400 point"))
+
+    def test_setup_commands_target_current_release_but_do_not_claim_publication(self):
+        for name in ("README.md", "plugin/README.md", "plugin/after-install.md"):
+            text = flat(name)
+            with self.subTest(file=name):
+                self.assertIn("--branch v0.5.1", text)
+                self.assertNotIn("--branch v0.5.0", text)
+                if not released():
+                    self.assertIn("draft", text.lower())
+                    self.assertIn("not published", text)
+        catalog = flat("catalog/atlas-sidecar-libreoffice.yaml")
+        if not released():
+            self.assertIn("sha: TODO", catalog)
+            self.assertIn("not a submitted/admitted catalog update", catalog)
+
+    def test_unsafe_cache_text_matches_the_frozen_protocol(self):
+        sentence = "The Sidecar cache folder is unsafe. See README ▸ Which browser."
+        for name in ("docs/web-protocol.md", "README.md", "plugin/README.md"):
+            with self.subTest(file=name):
+                self.assertIn(sentence, flat(name))
+
+    def test_current_styling_claim_is_pinned_not_computed_layout_equality(self):
+        for name in ("README.md", "plugin/README.md", "docs/sidecar-parity.md"):
+            text = flat(name)
+            with self.subTest(file=name):
+                self.assertIn("same pinned Omnia styling", text)
+                self.assertIn("not a", text)
+        readme = flat("README.md")
+        self.assertNotIn("](docs/assets/screenshots/calc-summary-chart.png)", readme)
+        self.assertIn("Historical 0.4.0 screenshots", readme)
+
+    def test_evidence_ledger_preserves_scope_and_pending_candidate_gates(self):
+        ledger = flat("docs/release-0.5.1.md")
+        for fact in ("Unreleased", "797aeb5", "352f7fe", "fake Runs API", "owner-run",
+                     "LOCAL SERVICE", "limited-token", "Linux units", "Manual VoiceOver",
+                     "12-hour", "Q255", "not a clean-exit", "Pending", "publication"):
+            with self.subTest(fact=fact):
+                self.assertIn(fact, ledger)
+
+
 if __name__ == "__main__":
     unittest.main()
