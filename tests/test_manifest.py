@@ -248,7 +248,14 @@ class FollowDisclosureTests(unittest.TestCase):
 
     def test_evidence_ledger_preserves_scope_and_pending_candidate_gates(self):
         ledger = flat("docs/release-0.5.1.md")
-        for fact in ("Unreleased", "797aeb5", "352f7fe", "fake Runs API", "owner-run",
+        self.assertIn("2026-11-22" if released() else "Unreleased", ledger)
+        if released():
+            for fact in ("PASS 12/12", "exactly four", "Stop during a document tool",
+                         "native-caption real-click close remains UNQUALIFIED",
+                         "not full-contract G9 signoff", "Multi-display/Retina hardware untested"):
+                with self.subTest(release_scope=fact):
+                    self.assertIn(fact, ledger)
+        for fact in ("797aeb5", "352f7fe", "fake Runs API", "owner-run",
                      "LOCAL SERVICE", "limited-token", "Linux units", "Manual VoiceOver",
                      "12-hour", "Q255", "not a clean-exit", "Pending", "publication"):
             with self.subTest(fact=fact):

@@ -2,8 +2,6 @@
 
 The plugin needs its companion **LibreOffice extension**, which Hermes does not install.
 
-**0.5.1 draft — not published.** These are prospective release instructions. Wait for the release tag and catalog update; the candidate hash is recorded in the README and the release date is not final.
-
 1. **Restart Hermes** so the plugin loads: `hermes gateway restart`, or reopen Hermes Desktop. Upgrading from a plugin build before 0.4.0 (`libreoffice-live`)? Remove it (`hermes plugins remove libreoffice-live`) and restart the gateway once: its chat listener keeps port 8661 until the gateway restarts.
 2. **Build the extension from the release tag** (Python 3.9+; Windows: use `py` and `scripts\build_oxt.py`):
 

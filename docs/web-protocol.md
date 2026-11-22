@@ -847,8 +847,7 @@ new snapshots, on the existing 3 s tick and on resize, a position OR size deviat
 points**, with unchanged screen measurements and no own pending placement/read-back, means
 manual undock: stop movement and polling, sticky until Reattach/new session. Screen changes
 re-baseline, not undock. Reattach requests seq=0, applies the newest snapshot and docks.
-A drag begun during own settling can be snapped back once (accepted residual, not qualified
-by D2). Ignore older seq. Validate bounds; one resizeTo and one moveTo call site, resize first,
+Hand changes made before placement and its read-back settle can be overwritten; further host placements restart that interval. Ignore older seq. Validate bounds; one resizeTo and one moveTo call site, resize first,
 skip unchanged calls. Never act in tab mode, ended, undocked, paused or off. Never open/focus/
 blur/requestFullscreen/getScreenDetails/navigate; never store/log/send geometry, put it in a
 URL/title/request, or send the page position to the plugin. No document/model-driven placement.
@@ -1201,7 +1200,7 @@ Observed after the spikes (0.5.0 lanes and integration):
 Revision-5 hardware/compatibility limits (not product acceptance): second display, negative
 coordinates, display above/left, Retina/mixed scale, screen reconfiguration, green-button
 Spaces/Stage Manager/tiling, long hand-drag feel, macOS Edge/Brave/Chromium, Intel/other macOS
-and LO versions, >8 windows and same-document multi-frame, managed browsers, future Chrome
+and LO versions, >8 windows and the broader same-document multi-frame lifecycle matrix (the installed Writer second-view-close scenario passed), managed browsers, future Chrome
 moveTo changes, manual NVDA/VoiceOver, macOS Firefox and alternative Windows default handlers
 remain unverified. Pause/Reattach for another display; no native Space coupling; no screen
 reader claim. D2 actual document drag was 0/3; G6 must retest. Q255 traced exit 255 to

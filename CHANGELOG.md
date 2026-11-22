@@ -2,16 +2,16 @@
 
 All notable changes to Sidecar for LibreOffice are documented here. The format follows Keep a Changelog.
 
-## [0.5.1] - Unreleased
+## [0.5.1] - 2026-11-22
 
-**Integrated candidate, not release approval.** The four fix packages are merged; the deterministic archive hashes and page renders are recorded. Candidate acceptance is scoped in `docs/release-0.5.1.md` and the private integration report. Release date and public catalog publication remain pending. Older tested results retain their original attribution in the 0.5.0 section.
+Release evidence and limitations are recorded in `docs/release-0.5.1.md`: measured native performance, Windows G7 12/12, automated accessibility and the bounded four-turn everyday-Mac real-gateway run. Public publication/catalog admission are separate, unperformed steps. Older results retain their original attribution.
 
 ### Added
 - Optional **Follow LibreOffice** for an eligible macOS app window, **off by default**, separately from chat. Settings remembers the choice in the dedicated browser profile; missing, invalid or unavailable storage means off. No new plugin setting. Tabs and Windows do not follow.
 - Moving **or resizing** Sidecar by hand undocks it until **Reattach** or a new session. Reattach restores 400 points wide. Open Sidecar only raises the browser; it does not reattach or guarantee document-specific focus.
 - Capability negotiation and signed bounds transport, bound to the launching document window, with a shared four-slot reply/window-poll pool and priority for reply polls. The extension’s follow worker coalesces changes, sends at most ten bounds updates per second and renews its own channel. Support can disable it with `HERMES_LO_SIDECAR_NO_FOLLOW=1`.
 
-### Fixed (candidate scope; acceptance pending)
+### Fixed
 - Retry unanswered/busy document-close releases at 0.5, 1.5 and 3.5 seconds, stopping after any signed answer or quit. Negotiated attachment-scoped releases capture the signed launch id, so delayed old closes cannot end a replacement session/turn or revoke its pending code. Old launchers or plugins without `attachment_release` retain document-wide best-effort behavior, including the risk that a delayed close affects a reopened document. Recovery is bounded, not guaranteed delivery.
 - Distinguish an unsafe cache folder from a browser-launch failure without bypassing private-file checks.
 - Reject trailing newlines and other partial matches in launcher URLs, nonces and bootstrap inputs; reap exited browser hand-off children.
@@ -23,13 +23,13 @@ All notable changes to Sidecar for LibreOffice are documented here. The format f
 - Use the same pinned Omnia styling wording instead of a claim of identical computed layout. Old native-panel images are labelled historical, not presented as the current window; six light/dark shipped-page renders are supplied, using headless recorder geometry rather than native placement. Windows screenshots do not change.
 - Keep Windows 0.5.1 on the default-browser tab; Chrome-first app-window work is a 0.5.2 spike. Edge Startup Boost and raising remain unresolved. No native Linux support claim.
 - Improve browser-failure disclosures, catalog-template status and the [tested/not-run ledger](docs/release-0.5.1.md). Browser harness parity, captured observations and a mandatory real-plugin browser release gate are required; no new CI browser job is promised.
-- Automated accessibility remains required, including Reattach, Settings and focus behavior. Manual VoiceOver and NVDA are not required and remain not run. The owner runs the bounded real-gateway macOS candidate check; fake Runs API checks do not substitute for it.
+- Automated accessibility remains required, including Reattach, Settings and focus behavior. Manual VoiceOver and NVDA are not required and remain not run. The bounded everyday-Mac real-gateway check passed within its recorded scope; fake Runs API checks do not substitute for it.
 
 ### Known limits
-- Following is delayed, not rigid docking. Acceptance targets: median ≤150 ms, p95 ≤250 ms, maximum ≤400 ms with one or two windows; up to about 600 ms for fifth and later windows. The integrated candidate measured median/p95 79.738/110.343 ms (first), 70.497/102.404 ms (second), and 66.141/97.431 ms (fifth), 30 native moves each. Sixty forced-renewal cold moves measured 45.823/91.806 ms; these are bounded sampled native observations, not a general platform guarantee. A drag begun during the 400 ms settle/read-back interval can snap back once.
+- Following is delayed, not rigid docking. Acceptance targets: median ≤150 ms, p95 ≤250 ms, maximum ≤400 ms with one or two windows; up to about 600 ms for fifth and later windows. The integrated candidate measured median/p95 79.738/110.343 ms (first), 70.497/102.404 ms (second), and 66.141/97.431 ms (fifth), 30 native moves each. Sixty forced-renewal cold moves measured 45.823/91.806 ms; these are bounded sampled native observations, not a general platform guarantee. Hand changes made before placement and its read-back settle can be overwritten; further host placements restart that interval.
 - Sidecar does not minimise with LibreOffice; it stays where it is and following pauses while LibreOffice is minimised/hidden. No linked minimise or following across Spaces. Fullscreen is treated as an ordinary large window, possibly overlapping its right edge; native-fullscreen/Space detection is not qualified.
 - Second-display, negative-coordinate, Retina (2×), mixed-scale and display-change behavior are explicitly untested. Intended recovery: pause on another-display targets, move Sidecar there by hand, then Reattach; move/resize or switch off if placement is wrong. No window-management permission prompt.
-- Green-button full screen, Spaces, Stage Manager, tiling, Intel Macs, other macOS/LibreOffice versions, more than eight sessions and multiple frames for one document remain unverified. No rebind after a LibreOffice crash: close the old Sidecar and reopen from LibreOffice. Browser-level raise, stale “already open” after a browser crash, managed-policy failures, tab history/extensions and the disclosed unload tool-fence limitation remain.
+- Green-button full screen, Spaces, Stage Manager, tiling, Intel Macs, other macOS/LibreOffice versions, more than eight sessions and the broader multi-frame lifecycle matrix remain unverified; the Writer second-view-close scenario passed. No rebind after a LibreOffice crash: close the old Sidecar and reopen from LibreOffice. Browser-level raise, stale “already open” after a browser crash, managed-policy failures, tab history/extensions and the disclosed unload tool-fence limitation remain.
 - Source and scratch experiments are not installed acceptance. D2’s 255 quit result was traced by Q255 to harness SIGTERM after first-run Welcome UI, reproducible without an extension; it is not a clean-exit pass or evidence of a Sidecar quit regression. The merged candidate has exact-PID normal-Quit receipts with exit 0; scope and cleanup are in the release ledger.
 
 ## [0.5.0] - 2026-11-21

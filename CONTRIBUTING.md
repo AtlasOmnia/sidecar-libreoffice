@@ -19,7 +19,7 @@ python3 scripts/sidebar_sums.py --check                                 # the pa
 HERMES_HOME="$(mktemp -d)" hermes plugins validate plugin --install-deps
 ```
 
-0.5.1 remains Unreleased. Both README hashes identify the integrated candidate; `build_oxt.py --check` must match them. Update both together after extension changes and rerun candidate checks. Dating the release remains a maintainer action. Public catalog/update checks wait for publication. The current evidence and outstanding gates are in `docs/release-0.5.1.md`.
+0.5.1 is dated 2026-11-22. Both README hashes identify the final release archive; `build_oxt.py --check` must match them. Update both together after extension changes and rerun candidate checks. Public catalog/update checks wait for publication. The current evidence and outstanding gates are in `docs/release-0.5.1.md`.
 
 A change to a served file in `plugin/sidebar/` needs `python3 scripts/sidebar_sums.py --write`. Updating a vendored library is its own commit that changes the file, `vendor/VENDOR.json`, `SHA256SUMS` and `NOTICE`, and passes `python3 scripts/verify_vendor.py` (it downloads from the npm registry, so it runs in its own CI job, not in the unit suite).
 
@@ -44,6 +44,6 @@ python3 scripts/guarded_run.py -- python3 scripts/live_client.py \
 - Keep the SPDX header on new source files (a test checks it).
 - A change to `extension/`, `LICENSE` or `NOTICE` changes the `.oxt` SHA-256: put the new hash in `README.md` and `plugin/README.md` (a test checks both).
 - Say in the pull request what you ran live and on which LibreOffice version, and what you did not run. Do not describe something as tested live when only unit tests cover it.
-- Update `CHANGELOG.md` under *Unreleased*.
+- Update `CHANGELOG.md` under the next *Unreleased* section.
 
 By contributing you agree that your contribution is licensed under the Apache License 2.0.
