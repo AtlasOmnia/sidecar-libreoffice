@@ -101,7 +101,22 @@ class Processes(unittest.TestCase):
         M.terminate(os.getpid())  # not ours: nothing happens
         M.terminate(pid)
         self.assertFalse(M.running(pid))
-        self.assertEqual(M._CHILDREN[pid].returncode, -15)
+        # The registry no longer retains exited processes.
+        limit = time.monotonic() + 2
+        while pid in M._CHILDREN and time.monotonic() < limit:
+            time.sleep(0.01)
+        self.assertNotIn(pid, M._CHILDREN)
+
+    @unittest.skipIf(os.name == "nt", "POSIX process")
+    def test_handoff_children_are_reaped_without_another_launcher_action(self):
+        pids = [M.spawn(["/usr/bin/true"]) for _ in range(20)]
+        limit = time.monotonic() + 3
+        while any(pid in M._CHILDREN for pid in pids) and time.monotonic() < limit:
+            time.sleep(0.01)
+        self.assertFalse(set(pids).intersection(M._CHILDREN))
+        for pid in pids:
+            with self.assertRaises(ChildProcessError):
+                os.waitpid(pid, os.WNOHANG)
 
     def test_open_default_uses_usr_bin_open(self):
         with mock.patch.object(M.subprocess, "run") as run:

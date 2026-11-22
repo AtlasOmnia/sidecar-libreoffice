@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import subprocess
+import threading
 from typing import Any
 
 # (name, path of the executable inside the app bundle), in preference order. Fixed locations in
@@ -34,6 +35,15 @@ RAISE_SCRIPT = ("function run(argv) { ObjC.import('AppKit'); "
                 "if (!app || app.isNil()) return 'missing'; "
                 "return app.activateWithOptions(1) ? 'raised' : 'refused'; }")
 _CHILDREN: dict[int, Any] = {}
+_CHILDREN_LOCK = threading.Lock()
+
+
+def _reap(process: Any) -> None:
+    """Wait outside the registry lock, including short-lived Chromium hand-offs."""
+    process.wait()
+    with _CHILDREN_LOCK:
+        if _CHILDREN.get(process.pid) is process:
+            del _CHILDREN[process.pid]
 
 
 def roots() -> list[Path]:
@@ -66,7 +76,9 @@ def spawn(argv: list[str]) -> int:
     process = subprocess.Popen(argv, env=clean_environment(), stdin=subprocess.DEVNULL,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True,
                                start_new_session=True, shell=False)
-    _CHILDREN[process.pid] = process
+    with _CHILDREN_LOCK:
+        _CHILDREN[process.pid] = process
+    threading.Thread(target=_reap, args=(process,), name="SidecarBrowserReaper", daemon=True).start()
     return process.pid
 
 
