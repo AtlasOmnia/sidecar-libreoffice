@@ -508,7 +508,10 @@ vm.runInThisContext(SOURCE);
 CHECKS
 })().catch(e=>{console.error(e);process.exitCode=1;});
 '''.replace("SOURCE", json.dumps(source)).replace("CHECKS", checks)
-        result = subprocess.run(["node", "-e", harness], text=True, capture_output=True, timeout=20)
+        # Feed the unmodified harness on stdin: Windows CreateProcess limits
+        # command-line length, and the shipped page makes node -e exceed it.
+        result = subprocess.run(["node", "-"], input=harness, text=True,
+                                capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def follow_js(self, checks):
