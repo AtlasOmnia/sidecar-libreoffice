@@ -1,8 +1,8 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- Copyright 2026 Atlas Omnia -->
-# Sidecar web window: protocol contract (0.5.0)
+# Sidecar web window: protocol contract (0.5.1)
 
-This is the frozen contract between the four parts of the 0.5.0 Sidecar window:
+This is the frozen contract between the four parts of the 0.5.1 Sidecar window:
 
 - the **plugin** (the chat endpoint in `plugin/chat_bridge.py` and the modules it loads),
 - the **launcher** (the LibreOffice extension: `sidecar_launcher.py` and the per-OS adapters),
@@ -41,6 +41,18 @@ unload cuts it off and waits for it within one shared cut-off; unload asks known
 before it waits for the listener, which it ends at once and waits for within the budget (6.5,
 13.1); the Windows exclusive bind covers 127.0.0.1 on the port, not every address (1); a
 non-ASCII path is 404 before any MAC (3.2); the busy refusal is best effort (12).
+**Revision 5 (0.5.1)** freezes capability-negotiated optional macOS following,
+`/launcher/bounds`, `/api/window`, a shared four-slot park pool (turns first), worker
+handoff and renewal, sticky manual undock/Reattach and the remembered Settings switch.
+Following is **OFF by default**, including when the stored preference is absent, invalid or
+unavailable. Only `sidecar.follow = "on"` enables page following. Capability negotiation is
+independent of this preference: eligible macOS app launches negotiate follow so the switch
+is available; the page does no window polling or follow placement until opted in.
+D2 constants: retry 250 ms (poll-only fallback 100 ms), immediate send then 100 ms spacing,
+settle 400 ms **and completed read-back**, undock >8 points, rectangle floor 240×240.
+Fullscreen is treated as an ordinary large window: no reliable pure-UNO signal qualified
+both native modes. Default-on promotion needs passing retests and explicit owner approval.
+
 Labels such as R18, D1 or S1 are the requirement, owner-decision and spike numbers of the 0.5.0
 design review; the spike results that fixed a detail are quoted where they apply.
 
@@ -79,9 +91,11 @@ top-left of the main display, y downwards, in points (not device pixels).
 | POST | `/launcher/launch` | 0.5.0 launcher | channel MAC | `launcher-launch` |
 | GET | `/launcher/launch/<launch_id>` | 0.5.0 launcher | channel MAC | `launcher-status` |
 | POST | `/launcher/release` | 0.5.0 launcher | channel MAC | `launcher-release` |
+| POST | `/launcher/bounds` | 0.5.1 launcher | channel MAC | `launcher-bounds` |
 | GET | `/ui/<file>` | browser | none (inert files) | `ui-static` |
 | POST | `/api/session` | page | launch code in the body | `api-session` |
 | GET | `/api/state` | page | session header | `api-state` |
+| GET | `/api/window?seq=…` | page | session header | `api-window` |
 | POST | `/api/chat` | page | session header | `api-chat` |
 | GET | `/api/turn?id=…&seq=…&have=…` | page | session header | `api-turn` |
 | POST | `/api/turn/stop` | page | session header | `api-stop` |
@@ -149,6 +163,12 @@ Duplicate `Host`, `Origin`, `X-Sidecar-Session`, `X-Sidecar-Channel`, `X-Sidecar
 - **Rectangle**: `{"x": int, "y": int, "width": int, "height": int}`, screen points;
   `-32768 <= x, y <= 32767`, `240 <= width, height <= 8192`. JSON booleans are not integers.
 
+- **Window state**: `"normal" | "minimized" | "fullscreen" | "hidden" | "window_closed"`.
+- **Window snapshot**: `{"seq": int, "state": <window state>, "bounds": <Rectangle> | null}`.
+  `bounds` is non-null exactly when `state` is `normal`; `seq` is 0 before the first
+  accepted bounds call, otherwise 1..2147483647. Integers are never booleans.
+  Initial snapshot: `{"seq": 0, "state": "hidden", "bounds": null}` (not placed).
+
 ## 3. Launcher channel (R18): the launcher never sends the pairing token
 
 Key: `K` = the pairing token's UTF-8 bytes, exactly as the token file holds it with surrounding
@@ -174,6 +194,12 @@ answers 200:
 {"ok": true, "v": 1, "server_nonce": "<43>", "server_proof": "<43>", "expires_in": 120,
  "chat": {"ready": true, "reason": null}}
 ```
+
+The 200 answer may carry `"caps": [<strings>]`; 0.5.1 sends `["window_follow"]`.
+This is an unsigned hint only, permitting an eligible macOS app launcher to send the optional
+`follow` key (4.1). Unknown entries, a missing field or a wrong type mean no capabilities.
+Only the signed launch echo authorizes following. Old launchers ignore extra answer fields;
+a new launcher with an old plugin sends no new key and behaves exactly as 0.5.0.
 
 The launcher recomputes `server_proof` and compares in constant time. A mismatch, a missing
 field, or any status other than 200 means the program on that port is not this user's Hermes:
@@ -231,6 +257,21 @@ the 20 s outcome limit. At quit the launcher's hello and `host_quit` share one 2
 everything it does at quit (including waiting for the browser) is bounded by 4 s (an application
 budget for its requests and waits; a stalled file operation is not interrupted by it).
 
+**Follow worker's channel (revision 5).** One serialized worker per LibreOffice process,
+one request in flight, at most ten per second total, zero when nothing changes. The UNO
+main-thread listener only copies rectangle/state/work area into a bounded latest-value slot
+and wakes the worker, dropping unchanged values. No network, file or logging work, no lock
+held by the worker during I/O; the worker never reads UNO. D2 measured a callback maximum
+11.4262 ms over 1,866 callbacks (NOT PASS); actual production callback wall time must be
+measured at p100 ≤5 ms over ≥1000 callbacks. A hand-off design is required, not a waiver.
+Send the first change immediately, then at least 100 ms apart with a trailing latest value.
+Use an independent channel (not click/release/quit), opening a new hello before 48 calls or
+90 s; every whole call has a 1 s deadline. No in-place retry. Every failure drops the channel.
+Refused connection, signed 409 or failed proof unbinds that window until next Open Sidecar.
+Busy keeps the latest value and backs off 250 ms, 500 ms, 1 s; five consecutive busy refusals
+unbind. Each window's seq only grows. No follow failure changes panel text or starts/raises
+anything; quit/close starts no further request.
+
 ### 3.3 Test vectors
 
 Both sides must reproduce these exactly (unit tests in `tests/test_web_auth.py` and
@@ -256,11 +297,25 @@ request 2: GET /launcher/launch/AAAAAAAAAAAAAAAAAAAAAA, counter 2, empty body
   request MAC   pz9hSDdfVxWMTMKc772QPcntSZE8IV0T3jHUv836CuI
 ```
 
+```
+request 3: POST /launcher/bounds, counter 3, body (no trailing newline)
+  {"launch_id":"AAAAAAAAAAAAAAAAAAAAAA","seq":1,"state":"normal","bounds":{"x":1240,"y":102,"width":400,"height":848}}
+  SHA256(body)  22f9e39c4973f6720ea42b8e720a5f5993d2b3d578682559edf6d4ae654ac807
+  request MAC   v30WcmVm1K7joHamsLRFyRhnU4E5g6y47-bhQB8TPKE
+response to request 3: status 200, body {"ok":true,"seq":1}
+  SHA256(body)  c87ef1c0ab45dc8b9e285d32cd005ac8e66110a4dde2e68dfaa64991dcc2570c
+  response MAC  uB4aMcV9-01j7t7iVhTqS1q74kMyjkur7kCGft1U-dQ
+request 4: POST /launcher/bounds, counter 4, body
+  {"launch_id":"AAAAAAAAAAAAAAAAAAAAAA","seq":2,"state":"minimized","bounds":null}
+  SHA256(body)  cda42e6aeb2b78e01ce7ef5c07e3515c219f8a2161bff327b77662c9a9d7b254
+  request MAC   zekmULHpr-_hN52XDlsmycbEFggZ24vGwBNHTRKBHv8
+```
+
 ## 4. Launcher routes
 
 ### 4.1 `POST /launcher/launch`
 
-Body (exactly these keys):
+Body (exactly these required keys, plus optional `follow` below):
 
 ```json
 {"document": {"document_id": "…", "title": "…", "type": "calc"},
@@ -277,6 +332,14 @@ Body (exactly these keys):
 - `bounds`: the **client rectangle the Sidecar window should have**, in screen points (section
   8.3 says how the launcher computes it and how the page applies it).
 
+- Optional `"follow": true`: only after hello advertises `window_follow`, on macOS in app
+  mode, unless `HERMES_LO_SIDECAR_NO_FOLLOW=1`. Absent otherwise; `false`, another value or
+  `follow` with tab mode is 400 `bad_request`. Page preference does not suppress negotiation.
+  The signed 201 answer adds `"follow": true | false`; only true authorizes the follow worker.
+  The 200 `window_live` answer always adds `"follow": false` and keeps `launch_id: null`.
+  No launch-id listing exists. The id already on the session is the attachment; no `frame_id`
+  or `attachment_id` is added. Moving needs both the pairing token and this id.
+
 Answers:
 
 - 201 `{"ok": true, "launch_id": "<22>", "url": "<ORIGIN>/ui/index.html#launch=<43>", "window_live": false, "expires_in": 30}`
@@ -290,7 +353,7 @@ The launcher accepts `url` only if it matches
 `^http://127\.0\.0\.1:<PORT>/ui/index\.html#launch=[A-Za-z0-9_-]{43}$` for the port it called.
 
 A code is valid for 30 s from minting, once. It is bound to the document, `host_scheme`, `mode`
-and `bounds` given here. Unexchanged codes are purged at expiry.
+and `bounds` and `follow` given here. Unexchanged codes are purged at expiry.
 
 ### 4.2 `GET /launcher/launch/<launch_id>`
 
@@ -317,6 +380,24 @@ after its launch call, which revokes it; its bootstrap file is deleted; nothing 
 the browser was already being started, quit waits for it (bounded) and asks it to quit, and a
 close quits it when no other document has a window. `host_quit` is sent when a window was
 opened or a launch is in flight.
+
+A `document_closed` release with no answer or a busy refusal is retried on a new channel
+0.5 s, 1.5 s and 3.5 s after close. Never after quit begins or after any signed answer;
+never affect a reopened document. The wire format is unchanged.
+
+### 4.4 `POST /launcher/bounds`
+
+Body exactly `{"launch_id": "<22>", "seq": <int>, "state": <window state>, "bounds": <Rectangle> | null}`.
+`seq` is 1..2147483647, not boolean; bounds is non-null exactly for normal, with section 2's
+rectangle limits and 16 KiB POST limit. All launcher gates apply: exact Host, no Origin,
+Sec-Fetch-* or session header, channel MAC/replay counters, signed accepted-call answers.
+A live session must hold that launch_id, have launched with follow, and seq must exceed its
+last seq. Replace its latest snapshot, wake its window poll; signed 200 `{"ok": true, "seq": <n>}`.
+Otherwise signed 409 `attachment_stale` (unknown id, ended session, launch without follow,
+non-increasing seq), or signed 400 `bad_request` for shape/type errors. Never revive a session.
+Store latest only, at most eight snapshots, dropped at end/unload. First send is after launch
+state becomes `exchanged`. An old plugin has no route (unsigned 404); never call it without
+the signed follow echo. No browser route writes bounds; document/model text cannot control it.
 
 ## 5. Bootstrap-file launch (R2, D1): the code is never on a command line
 
@@ -396,6 +477,7 @@ Body `{"launch": "<43>"}`; no session header. 200:
  "limits": {"max_message": 8000}}
 ```
 
+- The exchange adds `"follow": true | false`, true only for an app launch that asked for it.
 - `bounds` is `null` in tab mode. `chat_label` is display-only: `lo-` followed by the first 8 hex
   digits of the plugin's chat session id (`lo-<32 hex>`), always 11 characters matching
   `^lo-[0-9a-f]{8}$`; the page never sends it back. The same form is used in 6.2 and 6.6.
@@ -564,6 +646,30 @@ eviction (`evicted`). Ending a session asks its driven run to stop. The plugin r
 digests of ended tokens and their reason for 10 minutes (at most 64) so a later request gets
 `ended`; after that, `ended` is `null`.
 
+The window snapshot is dropped when its session ends.
+
+### 6.9 `GET /api/window?seq=<n>`
+
+Query exactly `seq` once; decimal with no leading zeros, as 6.4, but range 0..2147483647
+to cover the window sequence range in section 2. 200:
+
+```json
+{"ok": true, "superseded": false, "retry_ms": 0,
+ "window": {"seq": 17, "state": "normal", "bounds": {"x": 1190, "y": 260, "width": 400, "height": 560}}}
+```
+
+Answer at once when snapshot seq exceeds the query. Otherwise park up to 25 s only if fewer
+than MAX_ACTIVE (4) requests are parked, counting turn and window polls together; timeout
+answers unchanged with retry_ms 0. Without a slot answer unchanged immediately, retry_ms 250.
+A turn poll always gets a slot: preempt one parked window poll (answer it with retry_ms 250)
+when needed. Poll-only fallback is a plugin constant: no window parks, retry_ms 100.
+One window poll per session; a newer poll answers the older with superseded true.
+Retry_ms 0 means ask again from the network callback; clamp other values to 100–5000 ms.
+A no-follow session gets 404 `no_follow`. All /api gates and session-end/unload rules apply;
+unload wakes parked window polls, each answers once 503 turned_off, no writes afterwards.
+A parked window poll counts as seen for window_live, but never as a turn poll for the
+90 s window-gone rule. The browser reads only its own snapshot, never sees launch_id.
+
 ## 7. Static files (`/ui/*`)
 
 - Only files listed in `plugin/sidebar/SHA256SUMS` are served, and only when their bytes still
@@ -593,6 +699,8 @@ Permissions-Policy: accelerometer=(), camera=(), display-capture=(), fullscreen=
 Cache-Control: no-cache
 ```
 
+The page never requests `window-management`; the Permissions-Policy above stays unchanged.
+
 ### 7.1 Files in `plugin/sidebar/`
 
 | File | Served | Note |
@@ -617,9 +725,9 @@ Cache-Control: no-cache
   `history.replaceState(null, "", "/ui/index.html")`. No other fragment parameter is read.
 - The session token lives only in a closure: no `localStorage`, `sessionStorage`, cookie, URL or
   `window.name`. Reload or a duplicated tab shows the reconnect text. (`localStorage` keeps only
-  the theme under `omnia.theme`.)
+  the theme under `omnia.theme` and follow preference under `sidecar.follow`, nothing else.)
 - Every `fetch` uses `credentials: "omit"`; POSTs send `Content-Type: application/json`.
-- App mode only, once after the exchange (S1 showed `resizeTo` and `moveTo` work in a Chrome app
+- App mode only, initially after the exchange (S1 showed `resizeTo` and `moveTo` work in a Chrome app
   window): `deco = outerHeight - innerHeight`; `w = bounds.width`, `h = bounds.height + deco`,
   `x = bounds.x`, `y = bounds.y - deco`; clamp `w`, `h` to `screen.availWidth/availHeight` and
   `x`, `y` into the `screen.avail*` rectangle; then **`resizeTo(w, h)` first and `moveTo(x, y)`
@@ -648,19 +756,51 @@ Cache-Control: no-cache
   a `send_id` (6.3). While a Send is undecided only a turn with that `send_id` is followed
   (revision 4).
 
+**Following (revision 5).** Settings shows **Follow LibreOffice** only when exchange follow is
+true. OFF by default; absent/invalid/unavailable `localStorage["sidecar.follow"]` means off;
+only `"on"` enables, off stores `"off"`. Remember across sessions, no plugin setting. Initial
+launch placement above remains unchanged; following off issues no window polls or follow
+geometry calls. Ask /api/window only in app mode with follow true, preference on, docked and
+visible. Stop polls while hidden, undocked, off or ended; resume only when eligible. One poll
+chain, re-issued from network callback (no second timer chain).
+
+After each own placement, cancel/restart a 400 ms settle/read-back callback. Suppress undock
+comparisons both during the settle interval **and until that placement's read-back callback
+has completed** (deadline expiry alone is insufficient). Read back actual x/y/outer sizes
+and current screen measurements to establish the placed baseline; never compute it. Before
+new snapshots, on the existing 3 s tick and on resize, a position OR size deviation **>8
+points**, with unchanged screen measurements and no own pending placement/read-back, means
+manual undock: stop movement and polling, sticky until Reattach/new session. Screen changes
+re-baseline, not undock. Reattach requests seq=0, applies the newest snapshot and docks.
+A drag begun during own settling can be snapped back once (accepted residual, not qualified
+by D2). Ignore older seq. Validate bounds; one resizeTo and one moveTo call site, resize first,
+skip unchanged calls. Never act in tab mode, ended, undocked, paused or off. Never open/focus/
+blur/requestFullscreen/getScreenDetails/navigate; never store/log/send geometry, put it in a
+URL/title/request, or send the page position to the plugin. No document/model-driven placement.
+
+Minimized/hidden/window_closed states carry null bounds and pause; do not run the launch
+fallback on them; keep last normal geometry. Hidden must latch until shown. No normal host
+rectangle below 240×240. Fullscreen is ordinary large-window behaviour, not qualified native
+Space detection; no automatic raise/activation or Space switch. Sidecar does not minimise
+with LibreOffice; it stays where it is and following pauses on minimisation.
+
+If screen.isExtended is true and target centre is outside the current screen, do not move:
+show the other-display text. Otherwise clamp to screen.avail* as above. No permission prompt.
+Second-display/negative-origin/Retina behaviour is explicitly hardware-untested.
+
 ### 7.3 DOM ids the page must keep
 
 `app-title`, `settings-button`, `connection-status` (`role="status"`), `privacy-badge`,
 `desk-connect`, `desk-connect-text`, `desk-connect-code`, `desk-connect-button`, `bridge-status`,
 `bridge-session-id` (shows `chat_label`), `new-chat-button`, `messages` (`role="log"`),
 `prompt-input`, `stop-button`, `send-button`, `settings-dialog`, `close-settings-button`,
-`save-settings-button`, `bridge-url`, `document-line`; radio groups named `omnia-palette` and
+`save-settings-button`, `bridge-url`, `document-line`, `follow-status`, `reattach-button`, `follow-toggle`; radio groups named `omnia-palette` and
 `omnia-mode`. These ids exist once, outside `#messages`. Code finds anything inside `#messages`
 by element reference, never by id; the sanitizer strips `id`, `name` and `class` from replies.
 
 ## 8. Launcher side
 
-### 8.1 `.oxt` contents (0.5.0)
+### 8.1 `.oxt` contents (0.5.1)
 
 ```
 META-INF/manifest.xml
@@ -677,6 +817,7 @@ python/range_logic.py
 python/office_ops.py
 python/panel_registry.py
 python/private_files.py
+python/window_follow.py          new: follow state, coalescing, worker (no UNO)
 python/sidecar_launcher.py       new: state machine, channel client, bootstrap file, bounds, argv
 python/launcher_macos.py         new: macOS adapter (shipped on every OS, imported on macOS only)
 python/launcher_windows.py       new: Windows adapter (shipped on every OS, imported on Windows only)
@@ -712,6 +853,7 @@ supported there.
 | no answer, or a broken connection | "Hermes did not answer on port <n>. Click Open Sidecar to try again." |
 | not macOS or Windows | "Sidecar windows are not supported on this system." |
 | no Calc, Writer or Impress document | "Sidecar opens for a Calc, Writer or Impress document." |
+| launch or browser cache folder refused as unsafe | "The Sidecar cache folder is unsafe. See README ▸ Which browser." |
 | the browser could not be started | "Sidecar could not start the browser. Click Open Sidecar to try again." |
 | pairing token file unsafe, missing or invalid | "The pairing token file has unsafe permissions; restart LibreOffice." / "The pairing token is missing; restart LibreOffice." / "The pairing token is invalid; restart LibreOffice." |
 | a refusal the plugin signed (any other status) | the plugin's own `error` sentence, at most 300 characters |
@@ -721,6 +863,8 @@ hello and no window opens. A wrong proof from a program that does answer 200 is 
 your Hermes* row. The hello answer is not signed, so for the coded refusals above the launcher
 shows its own fixed texts (the plugin's sentences for those codes), never the answer's words;
 any other coded refusal of the hello is the *not your Hermes* row.
+
+No panel text exists for follow failures.
 
 No automatic second attempt in another browser. A browser is spawned only from the panel's
 **Open Sidecar** button, after `/launcher/launch` answered 201 (and, for tests, from the
@@ -749,6 +893,14 @@ right side). It starts the browser with `--window-position=<x>,<y - G>` and
 and the page corrects the remainder. Windows has no app mode in 0.5.0, so no bounds are sent
 there. Not yet verified: 2× displays and a second display (G6).
 
+Following uses this formula for every normal event, except the overlap branch applies only
+when the frame centre lies inside work area A; otherwise put the target right of the frame.
+Do not send normal geometry for a rectangle smaller than 240 in either dimension. No UNO
+work-area fallback for minimized/hidden. Spike D's one-window parked move median/p95 were
+113.65/188.99 ms; D2's immediate-send shared parked run 21.60/38.93 ms, fifth-reader unparked
+217.13/327.93 ms. Sampled upper-bound timings on one 1× display, not a promise or hardware
+qualification of second display/Retina. D2 real LO drags unqualified and quit 255 unexplained.
+
 ## 9. Error codes and user texts
 
 ### 9.1 Machine codes (`code`)
@@ -774,6 +926,8 @@ there. Not yet verified: 2× displays and a second display (G6).
 | `plugin_inactive`, `worker_failed` | 503 | 6.3 |
 | `message_invalid` | 400 | 6.3 |
 | `unknown_turn` | 404 | 6.4, 6.5 |
+| `attachment_stale` | 409 | 4.4 |
+| `no_follow` | 404 | 6.9 |
 | `already_sent` | 409 | 6.3: an earlier `send_id` of this session whose turn is no longer current (revision 4) |
 | `turn_running` | 409 | 6.6 |
 | `turned_off` | 503 | the plugin is unloading |
@@ -805,6 +959,15 @@ ask in Hermes itself." (R20). Outcome texts are the plugin's: `USER_STOPPED` = "
 the document for changes made before stopping.", `OUTCOME_UNCERTAIN`, `PLUGIN_TURNED_OFF`, and
 the existing error sentences.
 
+Follow texts (fixed; outside #messages):
+
+- "Sidecar is not following LibreOffice." with Reattach.
+- "Following is paused while LibreOffice is minimised."
+- "Following is paused while LibreOffice is in full screen." (reserved state text; no qualified full-screen detection ships).
+- "Following is paused while LibreOffice is hidden."
+- "The LibreOffice window this Sidecar followed was closed."
+- "LibreOffice is on another display. Move this window there, then choose Reattach."
+
 ## 10. Methods outside the table
 
 On a known path, `GET` or `POST` where not listed, `OPTIONS`, `HEAD`, `PUT`, `DELETE` and `PATCH`
@@ -818,16 +981,17 @@ changes them in a later revision.
 
 `health`, `chat`, `launcher-hello`, `launcher-launch`, `launcher-status`, `launcher-release`,
 `ui-static`, `api-session`, `api-state`, `api-chat`, `api-turn`, `api-stop`, `api-new-chat`,
-`api-close`, `method`, `unknown`. A route handler sets `request.route_label` before it answers.
+`api-close`, `launcher-bounds`, `api-window`, `method`, `unknown`. A route handler sets `request.route_label` before it answers.
 Each answer is one log line: at DEBUG for a successful (status below 400) `api-state` or
-`ui-static` answer, which an idle window causes every 3 s, at INFO for every other answer and
+`ui-static`, `launcher-bounds` or `api-window` answer (state polling every 3 s), at INFO for every other answer and
 every refusal.
 
 ## 12. Connection budget (R4)
 
-Per Sidecar window: no connection while idle except a state poll every 3 s; one `/api/turn`
-long-poll while a turn is active. Plugin: at most `MAX_ACTIVE` (4) long-polls are ever parked
-(one per driven turn), which stays below the browser's six connections per origin, and 4 + 6
+At most `MAX_ACTIVE` (4) requests are ever parked, turn and window polls together,
+turn polls first. The follow worker has at most one request in flight and ten per second.
+Idle non-following pages keep only their 3 s state polls; active turns use /api/turn.
+The park cap stays below the browser's six connections per origin, and 4 + 6
 parallel static or poll requests stay below `MAX_HANDLERS` (16). The listen backlog is 64. A
 connection accepted while all 16 handler slots are taken gets the prepared answer 503
 `{"ok": false, "error": "the chat endpoint is busy; try again shortly", "code": "endpoint_busy"}`
@@ -838,7 +1002,7 @@ an older plugin.
 
 ## 13. Interfaces between lanes (Python)
 
-### 13.1 `plugin/chat_bridge.py` (seam A0, frozen except for lane A)
+### 13.1 `plugin/chat_bridge.py` (frozen after Day-0 S1)
 
 | Name | Use |
 | --- | --- |
@@ -871,6 +1035,8 @@ Added in 0.5.0 (lane A), all no-ops for callers that do not use them:
 The role gates of 1.2 also apply to the legacy pair. `plugin/web_auth.py` (codes, sessions, channels; no sockets) and `plugin/web_api.py`
 (routes, static files, turn records) register through `add_route_handler`.
 
+`chat_bridge.QUIET_LABELS` includes `launcher-bounds` and `api-window`; no other seam change.
+
 ### 13.2 Extension (`extension/python/`)
 
 `sidecar_launcher.py` (lane C1) calls one adapter module, chosen by `sys.platform`; both adapters
@@ -896,6 +1062,27 @@ host_scheme, mode, bounds)`, `status(launch_id)`, `release(document_id, reason)`
 frozen flag list. `hermes_bridge.py` calls `sidecar_launcher.on_document_closed(document_id)`
 and `sidecar_launcher.on_terminate()`.
 
+`window_follow.py` is pure Python, no UNO:
+
+| Name | Contract |
+| --- | --- |
+| `Follower.attach(document_id) -> handle` | main thread at click; one handle per document |
+| `handle.update(rect, state, work_area)` | main thread UNO callback; O(1), never blocks, unchanged dropped |
+| `handle.bind(launch_id, port)` | launch worker after signed follow true and exchanged; replaces binding, seq restarts at 1 |
+| `handle.close()` | close/dispose/quit; nothing sent afterwards |
+| `handle.alive` | listener removes itself when false |
+| `Follower.stop()` | quit: no further request started |
+
+`Launcher.open(...)` gains `follow=handle | None`. UNO listener XWindowListener +
+XTopWindowListener lives in hermes_sidebar.py, registry keyed by document, never panel-owned.
+Bind to the launching frame, not current document. Stop on frame disposal, document close or
+replacement in that frame, and quit; check binding immediately before send. Closing the deck
+does not stop following. A second same-document frame never takes over; closing the followed
+frame emits window_closed and ends following even if document remains open. A crash cannot
+rebind the old Sidecar; close/open again. On Windows nothing attaches or sends a follow key;
+adapter interfaces unchanged. Support kill switch HERMES_LO_SIDECAR_NO_FOLLOW=1 suppresses
+negotiation (independent of NO_NATIVE). Clicking Open Sidecar on an undocked window only raises.
+
 ## 14. What the spikes did not cover, and notes for 0.5.1
 
 Not covered by the spikes: Edge and Brave on macOS (not installed on the test Mac), Intel Macs,
@@ -920,7 +1107,19 @@ Observed after the spikes (0.5.0 lanes and integration):
   opened no tab; quitting LibreOffice sent `host_quit`, soffice exited 0 and the tab closed
   itself. The launch folder's DACL granted only SYSTEM, Administrators and OWNER RIGHTS.
 
-S3 findings kept for the Windows app window in 0.5.1 (not used in 0.5.0):
+Revision-5 hardware/compatibility limits (not product acceptance): second display, negative
+coordinates, display above/left, Retina/mixed scale, screen reconfiguration, green-button
+Spaces/Stage Manager/tiling, long hand-drag feel, macOS Edge/Brave/Chromium, Intel/other macOS
+and LO versions, >8 windows and same-document multi-frame, managed browsers, future Chrome
+moveTo changes, manual NVDA/VoiceOver, macOS Firefox and alternative Windows default handlers
+remain unverified. Pause/Reattach for another display; no native Space coupling; no screen
+reader claim. D2 actual document drag was 0/3 and quit 255 unexplained; G6 must retest.
+
+Spike W (investigation, not a Windows 0.5.1 feature): its implicit-sign-in disabling flag
+worked on the tested Edge build; placement was exact in physical pixels at 112% text scale.
+Startup Boost and raise remain unresolved; Chrome preferred for the 0.5.2 spike.
+
+S3 findings kept for the Windows app window in 0.5.2 (not used in 0.5.1):
 
 - Edge signed a fresh `--user-data-dir` profile into the user's Microsoft account without a prompt,
   also with `--disable-sync`, `--inprivate` and `--guest`; no flag prevented it.

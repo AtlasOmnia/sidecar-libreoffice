@@ -1,0 +1,4 @@
+request 3: SHA256 22f9e39c4973f6720ea42b8e720a5f5993d2b3d578682559edf6d4ae654ac807; MAC v30WcmVm1K7joHamsLRFyRhnU4E5g6y47-bhQB8TPKE; reference + text + plugin + launcher PASS
+response 3: SHA256 c87ef1c0ab45dc8b9e285d32cd005ac8e66110a4dde2e68dfaa64991dcc2570c; MAC uB4aMcV9-01j7t7iVhTqS1q74kMyjkur7kCGft1U-dQ; reference + text + plugin + launcher PASS
+request 4: SHA256 cda42e6aeb2b78e01ce7ef5c07e3515c219f8a2161bff327b77662c9a9d7b254; MAC zekmULHpr-_hN52XDlsmycbEFggZ24vGwBNHTRKBHv8; reference + text + plugin + launcher PASS
+3/3 revision-5 vectors verified
