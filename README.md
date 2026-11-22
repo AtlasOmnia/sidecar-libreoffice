@@ -247,7 +247,7 @@ Other panel messages:
 
 When on, Sidecar follows the document window that opened it, without raising or focusing itself. Moving **or resizing** Sidecar by hand undocks it: following stops until **Reattach** or a new session. **Reattach restores the 400-point width**; it does not remember a hand-chosen width. **Open Sidecar** only raises the browser; it does not reattach or reliably select the correct document’s browser window.
 
-Following is delayed, not rigid docking. Candidate targets are median ≤150 ms and 95th percentile ≤250 ms with one or two windows (maximum ≤400 ms), and up to about 600 ms for fifth and later windows. These are acceptance thresholds, not measured 0.5.1 release performance. A hand drag begun during the 400 ms placement-settle interval can be snapped back once.
+Following is delayed, not rigid docking. Candidate targets are median ≤150 ms and 95th percentile ≤250 ms with one or two windows (maximum ≤400 ms), and up to about 600 ms for fifth and later windows. The integrated candidate measured median/p95 79.738/110.343 ms (first window), 70.497/102.404 ms (second), and 66.141/97.431 ms (fifth), 30 native moves each; 60 forced-renewal cold moves measured 45.823/91.806 ms. These bounded sampled observations are not a general platform guarantee; see the release evidence ledger. A hand drag begun during the 400 ms placement-settle interval can be snapped back once.
 
 Sidecar does not minimise with LibreOffice; it stays where it is and following pauses. Hidden LibreOffice windows pause following too. There is no linked minimise or following across Spaces. Fullscreen is treated as an ordinary large window, possibly overlapping its right edge, not reliably detected native-fullscreen/Space behavior.
 
