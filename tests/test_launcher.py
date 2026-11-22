@@ -654,6 +654,15 @@ class StateMachine(unittest.TestCase):
         self.assertEqual(self.reports[-1], (L.COULD_NOT_START, False))
         self.assertEqual(self.launch_files(), [])
 
+    def test_unsafe_cache_has_the_protocol_sentence_and_starts_nothing(self):
+        from unittest.mock import patch
+        launcher = self.launcher()
+        with patch.object(L, "write_bootstrap", side_effect=L.private_files.UnsafePath("unsafe")):
+            self.open(launcher)
+        self.assertEqual(self.reports[-1], (L.CACHE_UNSAFE, False))
+        self.assertEqual(L.CACHE_UNSAFE, "The Sidecar cache folder is unsafe. See README ▸ Which browser.")
+        self.assertEqual(self.adapter.spawned + self.adapter.opened, [])
+
     def test_one_launch_per_document_at_a_time(self):
         launcher = self.launcher()
         held = []

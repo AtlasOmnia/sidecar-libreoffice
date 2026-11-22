@@ -110,6 +110,7 @@ HELLO_REFUSALS = {(503, "turned_off"): TURNED_OFF, (500, "internal"): ENDPOINT_F
 UNSUPPORTED = "Sidecar windows are not supported on this system."  # 8.1 names it, no exact text
 NO_DOCUMENT = "Sidecar opens for a Calc, Writer or Impress document."  # not in 8.2
 COULD_NOT_START = "Sidecar could not start the browser. Click Open Sidecar to try again."  # not in 8.2
+CACHE_UNSAFE = "The Sidecar cache folder is unsafe. See README ▸ Which browser."
 TOKEN_UNSAFE = "The pairing token file has unsafe permissions; restart LibreOffice."
 TOKEN_MISSING = "The pairing token is missing; restart LibreOffice."
 TOKEN_INVALID = "The pairing token is invalid; restart LibreOffice."
@@ -651,6 +652,8 @@ class Launcher:
                 text = self._launch(launch, doc, host_scheme, frame, work_area)
             except _Cancelled:
                 text = None
+            except private_files.UnsafePath:
+                text = CACHE_UNSAFE
             except LauncherError as exc:
                 text = str(exc)
             except Exception:
