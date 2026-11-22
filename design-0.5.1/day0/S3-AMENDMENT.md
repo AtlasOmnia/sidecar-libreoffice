@@ -1,0 +1,7 @@
+# Day-0 S3 gate-driven seam expansion
+
+First full suite: 612 tests, three failures (test_manifest version match, catalog setup tag match, dated-release D-FINAL marker check), five skips. Protected suites green and byte-identical. Evidence: suite.log.
+
+As sole Day-0 owner, expand S3 to update existing version pins in tests/test_manifest.py, local catalog/atlas-sidecar-libreoffice.yaml (including prospective tag text) and extension/README.txt. These are lane-D files, not frozen/protected files. No assertion relaxed: existing version equality and release-marker gates now apply to 0.5.1. Catalog ref/pin remains a placeholder; this is not publication/admission. This prerequisite was omitted by the refined plan's S3 list. tests/test_packaging.py changes only placeholder/current-file-list version text, not the released installation commands. D will finalize user docs later.
+
+S2 packaging gate was run with S3's placeholder/version edits prepared (required because adding a packaged module changes the old pinned archive hash). S2 owns only stub/build-list/manifest changes; protocol file-list entry already landed in C0. S1 protected suites ran separately; its full-suite count is recorded in the integrated S3/final gates. No protected test edits or reruns to hide failures.

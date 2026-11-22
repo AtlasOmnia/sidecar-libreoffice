@@ -2,6 +2,11 @@
 
 All notable changes to Sidecar for LibreOffice are documented here. The format follows Keep a Changelog.
 
+## [0.5.1] - Unreleased
+
+Day-0 contract and packaging seams only; optional Follow LibreOffice is OFF by default.
+Implementation and release acceptance are pending.
+
 ## [0.5.0] - 2026-11-21
 
 The sidebar chat moves into the **Sidecar window**: the chat of Sidecar for Excel, served by the plugin on loopback and opened beside LibreOffice in a browser when you click **Open Sidecar** in the Sidecar panel. The 55 document tools, the document bridge on port 8660, the tool fence and the run-ownership guarantees of 0.4.0 are unchanged. The sidebar chat is still off by default.

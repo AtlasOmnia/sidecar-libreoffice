@@ -95,17 +95,17 @@ class ManifestRegistrationTests(unittest.TestCase):
         manifest = (ROOT / "plugin" / "plugin.yaml").read_text(encoding="utf-8")
         extension = (ROOT / "extension" / "description.xml").read_text(encoding="utf-8")
         catalog = (ROOT / "catalog" / "atlas-sidecar-libreoffice.yaml").read_text(encoding="utf-8")
-        self.assertIn("version: 0.5.0", manifest)
-        self.assertIn('<version value="0.5.0"/>', extension)
-        self.assertIn('version: "0.5.0"', catalog)
-        self.assertIn("/tree/v0.5.0#readme", catalog)
+        self.assertIn("version: 0.5.1", manifest)
+        self.assertIn('<version value="0.5.1"/>', extension)
+        self.assertIn('version: "0.5.1"', catalog)
+        self.assertIn("/tree/v0.5.1#readme", catalog)
         # The text shipped inside the .oxt names the same version.
-        self.assertTrue((ROOT / "extension" / "README.txt").read_text(encoding="utf-8").startswith("Sidecar for LibreOffice 0.5.0 "))
+        self.assertTrue((ROOT / "extension" / "README.txt").read_text(encoding="utf-8").startswith("Sidecar for LibreOffice 0.5.1 "))
         # The extension bridge's Server header names the same minor version.
         self.assertIn('server_version = "SidecarLibreOfficeBridge/0.5"',
                       (ROOT / "extension" / "python" / "hermes_bridge.py").read_text(encoding="utf-8"))
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-        self.assertRegex(changelog, r"\n## \[0\.5\.0\] - (Unreleased|\d{4}-\d{2}-\d{2})\n")
+        self.assertRegex(changelog, r"\n## \[0\.5\.1\] - (Unreleased|\d{4}-\d{2}-\d{2})\n")
 
     def test_catalog_setup_tag_matches_the_release_version(self):
         """The catalog card sends users to build the extension at a tag: it must be this release's."""
@@ -133,7 +133,7 @@ class ManifestRegistrationTests(unittest.TestCase):
 
 DISCLOSURE_FILES = ("README.md", "plugin/README.md", "SECURITY.md", "catalog/atlas-sidecar-libreoffice.yaml")
 CURRENT_STATE_FILES = DISCLOSURE_FILES + ("plugin/after-install.md", "plugin/plugin.yaml", "extension/README.txt")
-# Every file lane D owns may carry a D-FINAL marker during the draft; none may once 0.5.0 is dated.
+# Every file lane D owns may carry a D-FINAL marker during the draft; none may once 0.5.1 is dated.
 LANE_D_FILES = CURRENT_STATE_FILES + ("CHANGELOG.md", "NOTICE", "plugin/NOTICE", "AGENTS.md", "CONTRIBUTING.md",
                                       "extension/description.xml", "docs/sidebar-design.md", "docs/sidecar-parity.md",
                                       "docs/demo.md", "docs/workflow-acceptance.md")
@@ -144,7 +144,7 @@ def flat(name: str) -> str:
 
 
 def released() -> bool:
-    return "## [0.5.0] - Unreleased" not in (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    return "## [0.5.1] - Unreleased" not in (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
 
 class WindowDisclosureTests(unittest.TestCase):
@@ -163,7 +163,7 @@ class WindowDisclosureTests(unittest.TestCase):
             "The plugin starts no process.",
             "one-time",                                     # launch code
             "session token",
-            "challenge-response",                           # R18: the 0.5.0 extension never sends the token
+            "challenge-response",                           # R18: the 0.5.1 extension never sends the token
             "0.4.0 extension",                              # the legacy routes keep the old limit
             "browser extensions can read the page",         # normal tab
             "history keeps the",                            # spent one-time link
@@ -200,7 +200,7 @@ class WindowDisclosureTests(unittest.TestCase):
     def test_draft_markers_are_gone_once_the_release_is_dated(self):
         markers = [name for name in LANE_D_FILES if "D-FINAL" in (ROOT / name).read_text(encoding="utf-8")]
         if not released():
-            self.skipTest(f"0.5.0 is unreleased; D-FINAL markers left in: {', '.join(markers) or 'none'}")
+            self.skipTest(f"0.5.1 is unreleased; D-FINAL markers left in: {', '.join(markers) or 'none'}")
         self.assertEqual(markers, [])
 
 

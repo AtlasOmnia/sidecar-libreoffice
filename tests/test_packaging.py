@@ -67,9 +67,9 @@ class OxtPackageTests(unittest.TestCase):
         if PLACEHOLDER in readme or PLACEHOLDER in plugin_readme:
             # The draft keeps one placeholder in each README until the integrated build is frozen.
             self.assertEqual((readme.count(PLACEHOLDER), plugin_readme.count(PLACEHOLDER)), (1, 1))
-            self.assertIn(f"Expected SHA-256 of `sidecar-libreoffice.oxt` for v0.5.0: `{PLACEHOLDER}`", readme)
-            self.assertTrue("## [0.5.0] - Unreleased" in (ROOT / "CHANGELOG.md").read_text(encoding="utf-8"),
-                            "fill the .oxt SHA-256 in README.md and plugin/README.md before dating 0.5.0")
+            self.assertIn(f"Expected SHA-256 of `sidecar-libreoffice.oxt` for v0.5.1: `{PLACEHOLDER}`", readme)
+            self.assertTrue("## [0.5.1] - Unreleased" in (ROOT / "CHANGELOG.md").read_text(encoding="utf-8"),
+                            "fill the .oxt SHA-256 in README.md and plugin/README.md before dating 0.5.1")
             self.skipTest("the .oxt SHA-256 is a D-final placeholder")
         documented = BUILD.documented_sha256()
         with tempfile.TemporaryDirectory() as directory:
@@ -81,7 +81,7 @@ class OxtPackageTests(unittest.TestCase):
     @unittest.skipUnless((ROOT / "extension" / "python" / "sidecar_launcher.py").is_file(),
                          "the launcher files land with the extension lane")
     def test_the_archive_holds_exactly_the_files_the_protocol_lists(self):
-        """docs/web-protocol.md section 8.1 is the frozen .oxt file list for 0.5.0."""
+        """docs/web-protocol.md section 8.1 is the frozen .oxt file list for 0.5.1."""
         protocol = (ROOT / "docs" / "web-protocol.md").read_text(encoding="utf-8")
         section = protocol[protocol.index("### 8.1"):protocol.index("### 8.2")]
         block = section[section.index("```\n") + 4:section.index("\n```", section.index("```\n") + 4)]
