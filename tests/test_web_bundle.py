@@ -38,9 +38,9 @@ CONTRACT_IDS = (
     "app-title", "settings-button", "connection-status", "privacy-badge", "desk-connect", "desk-connect-text",
     "desk-connect-code", "desk-connect-button", "bridge-status", "bridge-session-id", "new-chat-button", "messages",
     "prompt-input", "stop-button", "send-button", "settings-dialog", "close-settings-button", "save-settings-button",
-    "bridge-url", "document-line",
+    "bridge-url", "document-line", "follow-status", "reattach-button", "follow-toggle",
 )
-API_ROUTES = {"/api/session", "/api/state", "/api/chat", "/api/turn", "/api/turn/stop", "/api/new-chat", "/api/session/close"}
+API_ROUTES = {"/api/session", "/api/state", "/api/chat", "/api/turn", "/api/turn/stop", "/api/new-chat", "/api/session/close", "/api/window"}
 ALLOWED_TAGS = ["p", "br", "strong", "em", "del", "code", "pre", "blockquote", "ul", "ol", "li", "h1", "h2", "h3", "h4",
                 "h5", "h6", "table", "thead", "tbody", "tr", "th", "td", "hr", "a"]
 ENDED_TEXTS = (
@@ -385,8 +385,10 @@ class PageScriptTests(unittest.TestCase):
         self.assertNotRegex(self.code, r"https?://")
 
     def test_session_token_is_kept_in_memory_only(self):
-        for forbidden in ("localStorage", "sessionStorage", "document.cookie", "window.name", "indexedDB", "caches."):
+        for forbidden in ("sessionStorage", "document.cookie", "window.name", "indexedDB", "caches."):
             self.assertNotIn(forbidden, self.code)
+        self.assertEqual(re.findall(r'localStorage\.(?:getItem|setItem)\("([^"]+)"', self.code),
+                         ["sidecar.follow", "sidecar.follow"])
         self.assertIn('var THEME_KEY = "omnia.theme";', self.theme)
         self.assertNotIn("sessionStorage", self.theme)
         self.assertNotIn("location", self.theme)
@@ -508,6 +510,84 @@ CHECKS
 '''.replace("SOURCE", json.dumps(source)).replace("CHECKS", checks)
         result = subprocess.run(["node", "-e", harness], text=True, capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def follow_js(self, checks):
+        self.run_js('''
+  session = "test"; followCapable = true; followOn = true;
+  placed = readPlacement();
+  window.test = {apply:applyWindowSnapshot, check:checkUndock, attach:reattach,
+    toggle:toggleFollowing, resume:resumeFollowing, visibility:followVisibilityChanged,
+    end:endSession, pref:readFollowPreference,
+    state:function(){return {undocked:undocked,pending:placementPending,seq:windowSeq};}};
+''', checks)
+
+    def test_follow_default_and_invalid_or_unavailable_storage(self):
+        self.follow_js('''
+assert.equal(window.test.pref(),false);
+for (const value of [null,"", "ON", "off", "true", "invalid", "on"]) {
+ window.localStorage = {getItem:key=>{assert.equal(key,"sidecar.follow");return value;}};
+ assert.equal(window.test.pref(),value==="on");
+}
+Object.defineProperty(window,"localStorage",{get(){throw Error("denied");}, configurable:true});
+assert.equal(window.test.pref(),false);
+el("follow-toggle").checked=false;window.test.toggle();window.test.resume();
+assert.equal(requests.length,0);
+''')
+
+    def test_follow_settle_completion_restart_threshold_resize_and_sticky_undock(self):
+        self.follow_js('''
+const b={x:600,y:200,width:400,height:500};
+window.test.apply({seq:1,state:"normal",bounds:b});
+const old=[...timers.values()][0];
+assert.equal(window.test.state().pending,true);
+window.screenX+=20;window.test.check(); // deadline/timer not completed: never compare
+assert.equal(window.test.state().undocked,false);
+window.test.apply({seq:2,state:"normal",bounds:{...b,x:650}});
+old(); // canceled callback cannot release the newer placement's guard
+assert.equal(window.test.state().pending,true);
+[...timers.values()].at(-1)();
+assert.equal(window.test.state().pending,false);
+window.outerWidth+=8;window.test.check();assert.equal(window.test.state().undocked,false);
+window.outerWidth+=1;window.test.check();assert.equal(window.test.state().undocked,true);
+const x=window.screenX;
+window.test.apply({seq:3,state:"normal",bounds:{...b,x:700}});
+assert.equal(window.screenX,x);assert.equal(requests.length,0);
+window.test.attach();assert.equal(requests[0].path,"/api/window?seq=0");
+requests[0].resolve({ok:true,status:200,json:async()=>({window:{seq:2,state:"normal",bounds:b},retry_ms:250})});
+await flush();assert.equal(window.outerWidth,400);assert.equal(window.screenX,600);
+''')
+
+    def test_follow_screen_change_stale_seq_pauses_and_other_display(self):
+        self.follow_js('''
+window.screen.availWidth=1800;window.screenX+=50;window.test.check();
+assert.equal(window.test.state().undocked,false);
+const b={x:600,y:200,width:400,height:500};
+window.test.apply({seq:2,state:"normal",bounds:b});
+[...timers.values()].at(-1)();
+window.test.apply({seq:1,state:"normal",bounds:{...b,x:700}});
+assert.equal(window.screenX,600);
+for(const state of ["minimized","hidden","window_closed"]) {
+ window.test.apply({seq:window.test.state().seq+1,state,bounds:null});
+ assert.equal(window.screenX,600);
+}
+window.screen.isExtended=true;
+window.test.apply({seq:6,state:"normal",bounds:{...b,x:2500}});
+assert.equal(window.screenX,600);assert.match(el("follow-status").textContent,/another display/);
+window.test.resume();assert.equal(requests.length,0);
+''')
+
+    def test_follow_single_chain_visibility_off_and_end_fence(self):
+        self.follow_js('''
+window.test.resume();window.test.resume();assert.equal(requests.length,1);
+document.hidden=true;window.test.visibility();
+assert.equal(requests[0].init.signal.aborted,true);
+requests[0].resolve({ok:true,status:200,json:async()=>({retry_ms:0,window:{seq:1,state:"normal",bounds:{x:700,y:200,width:400,height:500}}})});
+await flush();assert.equal(window.screenX,100);assert.equal(requests.length,1);
+document.hidden=false;window.test.visibility();assert.equal(requests.length,2);
+window.test.end(null);assert.equal(requests[1].init.signal.aborted,true);
+requests[1].resolve({ok:true,status:200,json:async()=>({retry_ms:0})});
+await flush();window.test.resume();assert.equal(requests.length,2);
+''')
 
     def test_p03_late_state_failure_after_successful_retry_is_ignored(self):
         for failure in ('requests[0].reject(new Error("late"));',

@@ -116,9 +116,20 @@
   var statePending = false;
   var stateTimer = null;
   var theme = null;
+  var followCapable = false;
+  var followOn = false;
+  var undocked = false;
+  var otherDisplay = false;
+  var windowSeq = -1;
+  var windowPoll = null;
+  var windowTimer = null;
+  var placed = null;
+  var placementPending = false;
+  var placementTimer = null;
+  var placementGeneration = 0;
 
   // ------------------------------------------------------------------ transport
-  function api(method, path, body, keepalive) {
+  function api(method, path, body, keepalive, signal) {
     var headers = { "Accept": "application/json" };
     if (session) headers["X-Sidecar-Session"] = session;
     var init = {
@@ -134,6 +145,7 @@
       init.body = JSON.stringify(body);
     }
     if (keepalive) init.keepalive = true;
+    if (signal) init.signal = signal;
     return fetch(path, init).then(function (res) {
       return res.json().catch(function () { return null; }).then(function (data) {
         return { status: res.status, ok: res.ok, data: data && typeof data === "object" ? data : {} };
@@ -187,6 +199,12 @@
         }
         info.endpoint = typeof data.endpoint === "string" ? data.endpoint : window.location.origin;
         if (data.mode === "app" && validBounds(data.bounds)) alignWindow(data.bounds);
+        followCapable = data.mode === "app" && data.follow === true;
+        followOn = readFollowPreference();
+        byId("follow-setting").hidden = !followCapable;
+        byId("follow-toggle").checked = followOn;
+        updateFollowStatus();
+        resumeFollowing();
         applyState(data);
         startStatePolling();
         return;
@@ -214,6 +232,9 @@
     newChatPending = false;
     epoch += 1;
     stopStatePolling();
+    stopFollowing();
+    cancelPlacement();
+    updateFollowStatus();
     setRunning(false);
     setComposerEnabled(false);
     byId("new-chat-button").disabled = true;
@@ -226,6 +247,8 @@
   }
 
   function closeSessionOnExit() {
+    stopFollowing();
+    cancelPlacement();
     if (!session) return;
     var token = session;
     session = null;
@@ -249,7 +272,8 @@
   function validBounds(b) {
     if (!b || typeof b !== "object") return false;
     return ["x", "y", "width", "height"].every(function (k) { return Number.isInteger(b[k]); }) &&
-      b.width >= 240 && b.height >= 240;
+      b.x >= -32768 && b.x <= 32767 && b.y >= -32768 && b.y <= 32767 &&
+      b.width >= 240 && b.height >= 240 && b.width <= 8192 && b.height <= 8192;
   }
 
   // bounds is the client rectangle the window should have. Measure this window's own title bar,
@@ -267,11 +291,191 @@
       var h = Math.min(bounds.height + deco, ah);
       var x = Math.min(Math.max(bounds.x, ax), ax + aw - w);
       var y = Math.min(Math.max(bounds.y - deco, ay), ay + ah - h);
-      window.resizeTo(w, h);
-      window.moveTo(x, y);
+      var sizeChanged = window.outerWidth !== w || window.outerHeight !== h;
+      var positionChanged = window.screenX !== x || window.screenY !== y;
+      if (!sizeChanged && !positionChanged) return;
+      beginPlacement(); // mark pending BEFORE resize events can run
+      if (sizeChanged) window.resizeTo(w, h);
+      if (positionChanged) window.moveTo(x, y);
     } catch (e) {
       // A browser that refuses to move the window leaves it where the launcher put it.
     }
+  }
+
+  // ------------------------------------------------------------------ optional following
+  // This is the only page preference; session and geometry never enter storage.
+  function readFollowPreference() {
+    try { return window.localStorage.getItem("sidecar.follow") === "on"; }
+    catch (e) { return false; }
+  }
+
+  function followEligible() {
+    return !!session && !ended && followCapable && followOn && !undocked &&
+      !otherDisplay && !document.hidden;
+  }
+
+  function screenMeasurements() {
+    var s = window.screen;
+    return [s.availLeft, s.availTop, s.availWidth, s.availHeight,
+      s.width, s.height, window.devicePixelRatio].join(",");
+  }
+
+  function readPlacement() {
+    return { x: window.screenX, y: window.screenY, width: window.outerWidth,
+      height: window.outerHeight, screen: screenMeasurements() };
+  }
+
+  function cancelPlacement() {
+    placementGeneration += 1;
+    if (placementTimer !== null) clearTimeout(placementTimer);
+    placementTimer = null;
+    placementPending = false;
+  }
+
+  function beginPlacement() {
+    cancelPlacement();
+    placementPending = true;
+    var generation = placementGeneration;
+    placementTimer = setTimeout(function () {
+      if (generation !== placementGeneration) return;
+      placed = readPlacement();
+      placementTimer = null;
+      placementPending = false; // only this completed read-back releases comparisons
+    }, 400);
+  }
+
+  function checkUndock() {
+    if (!followEligible() || placementPending) return;
+    var now = readPlacement();
+    if (!placed || now.screen !== placed.screen) {
+      placed = now; // screen/scale/work-area change is not a hand move
+      return;
+    }
+    if (["x", "y", "width", "height"].some(function (k) { return Math.abs(now[k] - placed[k]) > 8; })) {
+      undocked = true;
+      stopFollowing();
+      updateFollowStatus();
+      setText(byId("follow-announcement"), "Sidecar is not following LibreOffice.");
+    }
+  }
+
+  function updateFollowStatus(text) {
+    var active = followCapable && followOn && !ended;
+    byId("follow-strip").hidden = !active;
+    byId("reattach-button").hidden = !(active && (undocked || otherDisplay));
+    setText(byId("follow-status"), text || (undocked ? "Sidecar is not following LibreOffice." :
+      otherDisplay ? "LibreOffice is on another display. Move this window there, then choose Reattach." :
+      "Following LibreOffice"));
+  }
+
+  function stopFollowing() {
+    if (windowTimer !== null) clearTimeout(windowTimer);
+    windowTimer = null;
+    if (windowPoll) windowPoll.abort();
+    windowPoll = null; // callbacks from this chain are fenced by controller identity
+  }
+
+  function resumeFollowing() {
+    if (followEligible() && !windowPoll && windowTimer === null) pollWindow();
+  }
+
+  function pollWindow() {
+    if (!followEligible() || windowPoll) return;
+    checkUndock();
+    if (!followEligible()) return;
+    var controller = new AbortController();
+    windowPoll = controller;
+    var next = function (delay) {
+      if (!followEligible()) return;
+      if (delay === 0) pollWindow();
+      else windowTimer = setTimeout(function () { windowTimer = null; pollWindow(); }, delay);
+    };
+    api("GET", "/api/window?seq=" + Math.max(0, windowSeq), undefined, false, controller.signal).then(function (result) {
+      if (windowPoll !== controller) return;
+      windowPoll = null;
+      if (!followEligible() || handleSessionEnd(result)) return;
+      if (!result.ok) {
+        if (result.data.code === "no_follow") {
+          followCapable = false;
+          byId("follow-setting").hidden = true;
+          updateFollowStatus();
+          return;
+        }
+        next(RETRY_MS);
+        return;
+      }
+      if (result.data.superseded === true) return;
+      applyWindowSnapshot(result.data.window);
+      var retry = result.data.retry_ms;
+      next(retry === 0 ? 0 : Number.isFinite(retry) ? Math.min(5000, Math.max(100, retry)) : RETRY_MS);
+    }, function () {
+      if (windowPoll !== controller) return;
+      windowPoll = null;
+      next(RETRY_MS);
+    });
+  }
+
+  function applyWindowSnapshot(snapshot) {
+    if (!followEligible() || !snapshot || !Number.isInteger(snapshot.seq) ||
+        snapshot.seq < 0 || snapshot.seq > 2147483647 || snapshot.seq <= windowSeq) return;
+    var state = snapshot.state;
+    if (state !== "normal" && ["minimized", "fullscreen", "hidden", "window_closed"].indexOf(state) < 0) return;
+    if (state === "normal" ? !validBounds(snapshot.bounds) : snapshot.bounds !== null) return;
+    checkUndock(); // compare against actual placed geometry before any new own placement
+    if (!followEligible()) return;
+    windowSeq = snapshot.seq;
+    if (state !== "normal") {
+      var paused = { minimized: "Following is paused while LibreOffice is minimised.",
+        fullscreen: "Following is paused while LibreOffice is in full screen.",
+        hidden: "Following is paused while LibreOffice is hidden.",
+        window_closed: "The LibreOffice window this Sidecar followed was closed." };
+      updateFollowStatus(paused[state]);
+      return; // null geometry never invokes a placement fallback
+    }
+    var b = snapshot.bounds, s = window.screen;
+    var left = typeof s.availLeft === "number" ? s.availLeft : 0;
+    var top = typeof s.availTop === "number" ? s.availTop : 0;
+    var cx = b.x + b.width / 2, cy = b.y + b.height / 2;
+    if (s.isExtended === true && (cx < left || cx >= left + s.availWidth || cy < top || cy >= top + s.availHeight)) {
+      otherDisplay = true;
+      stopFollowing();
+      updateFollowStatus();
+      return;
+    }
+    updateFollowStatus();
+    alignWindow(b);
+  }
+
+  function reattach() {
+    if (!followCapable || !followOn || !session || ended) return;
+    stopFollowing();
+    cancelPlacement();
+    undocked = false;
+    otherDisplay = false;
+    placed = readPlacement();
+    windowSeq = -1; // query seq=0, accept even the latest previously seen snapshot
+    setText(byId("follow-announcement"), "");
+    updateFollowStatus();
+    resumeFollowing();
+  }
+
+  function toggleFollowing() {
+    followOn = byId("follow-toggle").checked;
+    try { window.localStorage.setItem("sidecar.follow", followOn ? "on" : "off"); }
+    catch (e) { /* unavailable storage: this session only; the next launch defaults off */ }
+    stopFollowing();
+    cancelPlacement();
+    if (followOn && !undocked && !otherDisplay) {
+      placed = readPlacement();
+      windowSeq = -1;
+    }
+    updateFollowStatus();
+    resumeFollowing();
+  }
+
+  function followVisibilityChanged() {
+    if (document.hidden) stopFollowing();
+    else { checkUndock(); resumeFollowing(); }
   }
 
   // ------------------------------------------------------------------ host state
@@ -349,7 +553,7 @@
   }
   function startStatePolling() {
     stopStatePolling();
-    stateTimer = setInterval(pollState, STATE_POLL_MS);
+    stateTimer = setInterval(function () { checkUndock(); pollState(); }, STATE_POLL_MS);
   }
   function stopStatePolling() {
     if (stateTimer !== null) clearInterval(stateTimer);
@@ -879,6 +1083,10 @@
         last.focus();
       }
     });
+    byId("reattach-button").addEventListener("click", reattach);
+    byId("follow-toggle").addEventListener("change", toggleFollowing);
+    window.addEventListener("resize", checkUndock);
+    document.addEventListener("visibilitychange", followVisibilityChanged);
     window.addEventListener("focus", pollState);
     document.addEventListener("visibilitychange", pollState);
     window.addEventListener("pagehide", closeSessionOnExit);

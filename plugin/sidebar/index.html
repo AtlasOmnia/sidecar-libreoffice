@@ -49,6 +49,12 @@
         <button id="new-chat-button" class="bridge-copy-button" type="button" disabled>New chat</button>
       </section>
 
+      <section id="follow-strip" class="follow-strip" aria-label="Window following" hidden>
+        <span id="follow-status"></span>
+        <button id="reattach-button" class="secondary-button" type="button" hidden>Reattach</button>
+      </section>
+      <p id="follow-announcement" class="visually-hidden" aria-live="polite"></p>
+
       <section id="messages" class="messages" role="log" aria-label="Conversation" aria-live="polite" aria-relevant="additions"></section>
 
       <footer class="composer" role="region" aria-label="Message to Hermes">
@@ -87,6 +93,11 @@
             <label class="theme-choice"><input name="omnia-mode" type="radio" value="light" />Light</label>
           </div>
           <p class="theme-note">Applied immediately. Auto follows LibreOffice, or your system when unavailable.</p>
+        </fieldset>
+        <fieldset id="follow-setting" class="theme-group" hidden>
+          <legend>Window</legend>
+          <label class="theme-choice"><input id="follow-toggle" type="checkbox" role="switch" />Follow LibreOffice</label>
+          <p class="theme-note">Off by default. Applied immediately and remembered. Moving or resizing Sidecar stops following until Reattach. Sidecar does not minimise with LibreOffice.</p>
         </fieldset>
         <p>Hermes chat endpoint: <code id="bridge-url">not connected</code></p>
         <p>Document: <code id="document-line">none</code></p>

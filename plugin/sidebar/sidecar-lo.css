@@ -13,3 +13,10 @@
 .assistant .bubble .reply-link-url { flex: 1 1 160px; min-width: 0; padding: 0; background: none; overflow-wrap: anywhere; white-space: normal; user-select: all; }
 .assistant .bubble .reply-link-copy { flex: none; min-height: 28px; padding: 2px 8px; border: 1px solid var(--btn-border); border-radius: 6px; background: var(--btn-bg); color: var(--btn-text); font-size: 12px; font-weight: 600; }
 .assistant .bubble .reply-note { color: var(--muted); font-size: 14px; }
+
+/* Follow status is deliberately not a live region; only manual undocking is announced. */
+.follow-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
+.follow-strip[hidden], #reattach-button[hidden], #follow-setting[hidden] { display: none; }
+#follow-status { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }
+#reattach-button { flex: none; min-height: 30px; padding: 4px 10px; }
+#follow-toggle { accent-color: var(--accent); }
