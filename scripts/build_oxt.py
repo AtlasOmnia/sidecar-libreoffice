@@ -36,6 +36,7 @@ FILES = [
     "python/panel_registry.py",
     "python/private_files.py",
     "python/sidecar_launcher.py",
+    "python/window_follow.py",
     "python/launcher_macos.py",
     "python/launcher_windows.py",
     "Factories.xcu",
