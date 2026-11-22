@@ -456,6 +456,13 @@ class PageScriptTests(unittest.TestCase):
         for reason in ("replaced", "host_gone", "turned_off", "idle", "double_use", "evicted"):
             self.assertRegex(self.app, rf"\b{reason}: \"")
 
+    def test_p02_retry_wording_is_bounded_and_explains_later_delivery(self):
+        self.assertNotIn("never runs the same message twice", self.app)
+        self.assertNotIn("it is never run twice", self.app)
+        self.assertIn("Try again resends this message with the same ID.", self.app)
+        self.assertIn("Try again can send it now if it did not arrive earlier.", self.app)
+        self.assertEqual(self.app.count("last 64 published message IDs in this session"), 2)
+
     def test_long_poll_is_reissued_from_the_network_callback(self):
         self.assertIn('"/api/turn?id=" + encodeURIComponent(t.id) + "&seq=" + t.seq + "&have=" + t.have', self.code)
         self.assertNotRegex(self.code, r"setInterval\(\s*pollTurn")
