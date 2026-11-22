@@ -50,7 +50,7 @@ py scripts\build_oxt.py                   # writes dist\sidecar-libreoffice.oxt
 Get-FileHash dist\sidecar-libreoffice.oxt -Algorithm SHA256
 ```
 
-Expected SHA-256 of `sidecar-libreoffice.oxt` for v0.5.1: `D-FINAL-OXT-SHA256`. The archive is stored uncompressed with fixed metadata, so any CPython 3.9 or later on macOS or Windows builds these bytes from the `v0.5.1` tag (checked for 0.5.0 with CPython 3.9, 3.11, 3.13 and 3.14 on macOS and python.org 3.14 on Windows 11).
+Expected SHA-256 of `sidecar-libreoffice.oxt` for v0.5.1: `0e23e3571b5b77bbb953e6d8c27a206e1ff48fee2cf686653674cd53529b5d02`. The archive is stored uncompressed with fixed metadata, so any CPython 3.9 or later on macOS or Windows builds these bytes from the `v0.5.1` tag (checked for 0.5.0 with CPython 3.9, 3.11, 3.13 and 3.14 on macOS and python.org 3.14 on Windows 11).
 
 In LibreOffice choose **Tools → Extensions…** (**Extension Manager…** in older versions) **→ Add…**, pick `dist/sidecar-libreoffice.oxt` (Windows: `%USERPROFILE%\sidecar-libreoffice\dist\sidecar-libreoffice.oxt`) and accept any prompt. Opening the `.oxt` file with LibreOffice (double-click) does the same. Check that **Sidecar for LibreOffice** 0.5.1 by Atlas Omnia is listed and enabled, then choose **Close**; when LibreOffice asks to restart, choose **Restart Now**, or **Restart Later** and then quit and reopen LibreOffice. Do not use `unopkg add`.
 

@@ -1066,6 +1066,7 @@ and `sidecar_launcher.on_terminate()`.
 
 | Name | Contract |
 | --- | --- |
+| `Follower(read_token)` / `Follower.configure(read_token)` | supply the launcher's safe token-reader callable before any bind; never a token value |
 | `Follower.attach(document_id) -> handle` | main thread at click; one handle per document |
 | `handle.update(rect, state, work_area)` | main thread UNO callback; O(1), never blocks, unchanged dropped |
 | `handle.bind(launch_id, port)` | launch worker after signed follow true and exchanged; replaces binding, seq restarts at 1 |
