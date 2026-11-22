@@ -15,6 +15,7 @@ import io
 import json
 import re
 import shutil
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -461,6 +462,67 @@ class PageScriptTests(unittest.TestCase):
         self.assertIn("setTimeout(pollTurn, RETRY_MS)", self.code)
         self.assertIn("var RETRY_MS = 1000;", self.code)
         self.assertIn("var STATE_POLL_MS = 3000;", self.code)
+
+
+class PageRuntimeTests(unittest.TestCase):
+    """Execute the shipped closure with deterministic timers/transport (no npm dependencies)."""
+
+    def run_js(self, setup, checks):
+        if not shutil.which("node"):
+            self.skipTest("Node is needed for the deterministic page runtime regressions")
+        source = text("app.js").rsplit("})();", 1)[0] + setup + "\n})();"
+        harness = r'''
+const vm = require("vm"), assert = require("assert");
+const elements = new Map(), requests = [], timers = new Map();
+let timerId = 0;
+function el(id) {
+  if (!elements.has(id)) elements.set(id, {textContent:"", hidden:true, disabled:false,
+    value:"", checked:false, className:"", title:"", addEventListener(){},
+    setAttribute(){}, focus(){}, closest(){return {contains(){return false;}};}});
+  return elements.get(id);
+}
+global.window = {location:{hash:"", origin:"http://localhost"},
+  screen:{availLeft:0,availTop:0,availWidth:1920,availHeight:1080},
+  screenX:100,screenY:100,outerWidth:400,outerHeight:600,innerHeight:568,
+  resizeTo(w,h){this.outerWidth=w;this.outerHeight=h;},
+  moveTo(x,y){this.screenX=x;this.screenY=y;}, addEventListener(){}};
+global.document = {hidden:false, visibilityState:"visible", activeElement:null,
+  getElementById:el, addEventListener(){}, body:{}};
+global.history = {replaceState(){}};
+global.setTimeout = fn => {const id=++timerId;timers.set(id,fn);return id;};
+global.clearTimeout = id => timers.delete(id);
+global.setInterval = global.setTimeout; global.clearInterval = global.clearTimeout;
+global.fetch = (path, init) => new Promise((resolve,reject)=>requests.push({path,init,resolve,reject}));
+const flush = async () => {for(let i=0;i<12;i++) await Promise.resolve();};
+(async()=>{
+vm.runInThisContext(SOURCE);
+CHECKS
+})().catch(e=>{console.error(e);process.exitCode=1;});
+'''.replace("SOURCE", json.dumps(source)).replace("CHECKS", checks)
+        result = subprocess.run(["node", "-e", harness], text=True, capture_output=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_p03_late_state_failure_after_successful_retry_is_ignored(self):
+        for failure in ('requests[0].reject(new Error("late"));',
+                        'requests[0].resolve({ok:false,status:503,json:async()=>({})});'):
+            with self.subTest(failure=failure):
+                self.run_js('''
+  session = "test";
+  pendingSend = {id:"send", message:"hello", tries:3, unknown:true};
+  // The actual poll/retry/delivery logic; suppress unrelated turn rendering only.
+  startTurn = function () { turn = {id:"reply"}; };
+  window.retry = retryPending;
+  pollState();
+''', '''
+window.retry();
+assert.equal(requests.length,2);
+requests[1].resolve({ok:true,status:202,json:async()=>({turn:{id:"reply"}})});
+await flush();
+''' + failure + '''
+await flush();
+assert.equal(el("desk-connect").hidden,true);
+assert.notEqual(el("connection-status").textContent,"Hermes not reachable");
+''')
 
 
 class ReplyCorpusTests(unittest.TestCase):

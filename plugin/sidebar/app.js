@@ -462,6 +462,7 @@
   function retryPending() {
     var p = pendingSend;
     if (!p || !p.unknown || sending || !session) return;
+    epoch += 1;  // invalidate state polls started before this explicit retry, including failures
     p.tries = SEND_TRIES - 1;
     setStatus(TEXTS.checkingSend);
     deliver(p);
