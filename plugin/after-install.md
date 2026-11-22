@@ -11,9 +11,9 @@ The plugin needs its companion **LibreOffice extension**, which Hermes does not 
    python3 scripts/build_oxt.py --check
    ```
 
-   `--check` prints the SHA-256 and compares it with the integrated candidate hash in the README. A matching build is not proof of publication.
+   `--check` prints the SHA-256 and compares it with the published 0.5.1 archive hash in the README. The [v0.5.1 release](https://github.com/AtlasOmnia/sidecar-libreoffice/releases/tag/v0.5.1) also supplies the `.oxt` and `SHA256SUMS`. The 0.5.1 plugin catalog update is pending review in NousResearch/hermes-agent#158979; the merged catalog listing is still 0.4.1.
 
-3. **Install it in LibreOffice:** Tools → Extensions… → Add… → `dist/sidecar-libreoffice.oxt`, then Close and Restart Now (or Restart Later, then quit and reopen LibreOffice). Upgrading from 0.4.0 or 0.5.0: remove nothing; the 0.5.1 extension has the same identifier and replaces it, and your pairing and chat settings stay. The 0.5.0→0.5.1 installed upgrade is not yet verified. Older than 0.4.0: remove the earlier Sidecar or Hermes for LibreOffice extension in the same dialog, because LibreOffice installs the new one alongside it and both would use port 8660. If the sidebar then shows the Properties deck, click the green S tab once.
+3. **Install it in LibreOffice:** Tools → Extensions… → Add… → `dist/sidecar-libreoffice.oxt`, then Close and Restart Now (or Restart Later, then quit and reopen LibreOffice). Upgrading from 0.4.0 or 0.5.0: remove nothing; the 0.5.1 extension has the same identifier and replaces it, and your pairing and chat settings stay. Installed 0.5.0→0.5.1 replacement passed in a disposable profile; the public `hermes plugins update` command remains untested. Older than 0.4.0: remove the earlier Sidecar or Hermes for LibreOffice extension in the same dialog, because LibreOffice installs the new one alongside it and both would use port 8660. If the sidebar then shows the Properties deck, click the green S tab once.
 4. **Pair:** in LibreOffice choose Tools → Copy Sidecar pairing token, then run
    `hermes config set LIBREOFFICE_LIVE_BRIDGE_TOKEN "$(pbpaste)"` (macOS) or
    `hermes config set LIBREOFFICE_LIVE_BRIDGE_TOKEN (Get-Clipboard)` (Windows PowerShell),

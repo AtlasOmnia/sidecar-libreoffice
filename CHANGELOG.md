@@ -4,7 +4,7 @@ All notable changes to Sidecar for LibreOffice are documented here. The format f
 
 ## [0.5.1] - 2026-11-22
 
-Release evidence and limitations are recorded in `docs/release-0.5.1.md`: measured native performance, Windows G7 12/12, automated accessibility and the bounded four-turn everyday-Mac real-gateway run. Public publication/catalog admission are separate, unperformed steps. Older results retain their original attribution.
+Release evidence and limitations are recorded in `docs/release-0.5.1.md`: measured native performance, Windows G7 12/12, automated accessibility and the bounded four-turn everyday-Mac real-gateway run. Version 0.5.1 is published at tag `v0.5.1` (`ea7a4a4`), with the `.oxt` and `SHA256SUMS` in the GitHub release; public CI run 44998132847 passed all six jobs. The 0.4.1 catalog listing merged via NousResearch/hermes-agent#158259; the 0.5.1 update (#158979) awaits Nous review and is not admitted. Older results retain their original attribution.
 
 ### Added
 - Optional **Follow LibreOffice** for an eligible macOS app window, **off by default**, separately from chat. Settings remembers the choice in the dedicated browser profile; missing, invalid or unavailable storage means off. No new plugin setting. Tabs and Windows do not follow.
