@@ -16,6 +16,10 @@ Hand-moving **or resizing** Sidecar undocks it. The page says **Sidecar is not f
 
 This is delayed following, not rigid docking. Candidate acceptance thresholds are median ≤150 ms, 95th percentile ≤250 ms and maximum ≤400 ms for one or two windows, and up to about 600 ms for fifth and later windows. These are targets, not a 0.5.1 measurement. After its own placement the page allows 400 ms to settle and completes a read-back before detecting a hand move; more than 8 points of position or size change then undocks it. **A hand drag begun during that settling interval can be snapped back once.** If the window fights your placement, turn following off.
 
+A single unanswered bounds call is retried on a fresh channel with bounded back-off and the latest geometry. After five consecutive busy/unanswered calls, or a terminal follow failure, close Sidecar and click Open Sidecar again; clicking it while the old window is still live only raises it.
+
+Even with the switch off, the extension still posts the launching window’s rectangle and state to the local plugin, up to ten times a second during changes. `HERMES_LO_SIDECAR_NO_FOLLOW=1` stops that transport.
+
 ## Minimise, fullscreen and displays
 
 - **No linked minimise.** Sidecar does not minimise with LibreOffice; it stays where it is and following pauses. It resumes on normal geometry after restore. Hidden LibreOffice windows pause following too; hiding the Sidecar page stops its window polling and placement until it is visible and eligible again.
@@ -25,9 +29,9 @@ This is delayed following, not rigid docking. Candidate acceptance thresholds ar
 
 ## Document and browser limits
 
-Following belongs to the document window that launched Sidecar, not whichever LibreOffice window is frontmost. Closing that window, disposing it or loading a different document ends its following. A second frame on the same document does not take over; that case is untested. At most eight sessions are supported; more than eight windows are untested. After a LibreOffice crash the old Sidecar cannot rebind: close it and click Open Sidecar again after restarting LibreOffice.
+Following belongs to the document window that launched Sidecar, not whichever LibreOffice window is frontmost. Closing that window, disposing it or loading a different document ends its following. A same-document view switch, including Print Preview, keeps Sidecar and its reply open and keeps following attached. A second frame on the same document does not take over. If that second frame keeps the document open when the launching frame closes, Sidecar and its reply stay open, but following stops; close Sidecar and click Open Sidecar from the remaining frame to follow it. At most eight sessions are supported; more than eight windows are untested. After a LibreOffice crash the old Sidecar cannot rebind: close it and click Open Sidecar again after restarting LibreOffice.
 
-A browser crash can leave **Sidecar is already open** in the panel for up to 90 seconds. That is not proof a window is alive, nor a guarantee every still-polling session expires at 90 seconds. Document-close releases retry within a fixed budget, but all attempts can fail. Hidden/minimised pages can notice a release up to about a minute late.
+A browser crash can leave **Sidecar is already open** in the panel for about two minutes. That is not proof a window is alive, nor a guarantee every still-polling session expires at 90 seconds. Document-close releases retry within a fixed budget, but all attempts can fail. Hidden/minimised pages can notice a release up to about a minute late.
 
 macOS fallback uses the `.html` association; an editor association cannot complete a browser launch. Browser-level focus may select the wrong window. Managed sign-in, extension, file/loopback URL or proxy policies can prevent connection; Sidecar neither bypasses them nor tries another browser after a failed connection. An unsafe cache is refused with **The Sidecar cache folder is unsafe. See README ▸ Which browser.** Do not loosen its permissions or bypass the private-file check.
 

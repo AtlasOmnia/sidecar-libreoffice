@@ -397,9 +397,31 @@ class FollowTests(unittest.TestCase):
         self.pump()
         self.assertEqual(self.clients[-1].calls[-1][1]['bounds']['x'], 1000)
 
+    def test_unanswered_call_recovers_on_fresh_channel_with_larger_sequence(self):
+        for error in (TimeoutError(), launcher.LauncherError(launcher.NO_ANSWER.format(port=12345))):
+            self.handle.bind('A' * 22, 12345)
+            self.engine._client = None
+            self.clock.advance()
+            first = self.send_first()
+            self.change(210)
+            self.clients[-1].effects.append(error)
+            self.clock.advance()
+            self.pump()
+            self.assertIsNotNone(self.handle._binding)
+            self.assertIsNone(self.engine._client)
+            self.change(310)
+            self.clock.advance(.25)
+            self.pump()  # new hello, never reuse uncertain counter
+            self.clock.advance()
+            self.pump()
+            latest = self.clients[-1].calls[-1][1]
+            self.assertGreater(latest['seq'], first['seq'] + 1)
+            self.assertEqual(latest['bounds']['x'], 1010)
+            self.assertEqual(self.handle._busy, 0)
+
     def test_all_failures_unbind_and_rebind_resets_seq(self):
         for effect in (ConnectionRefusedError(), launcher.LauncherError('proof'),
-                       TimeoutError(), (409, {'code': 'attachment_stale'}),
+                       (409, {'code': 'attachment_stale'}),
                        (200, {'ok': True, 'seq': 999}), (400, {})):
             self.handle.bind('A' * 22, 12345)
             self.engine._client = None

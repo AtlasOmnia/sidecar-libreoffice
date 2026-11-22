@@ -297,9 +297,11 @@ still only one request in flight and no idle prewarming. This replaces conservat
 of every hello/bounds pair, not the total request budget, channel proofs or lifetime fences.
 Use an independent channel (not click/release/quit), opening a new hello before 48 calls or
 90 s; every whole call has a 1 s deadline. No in-place retry. Every failure drops the channel.
-Refused connection, signed 409 or failed proof unbinds that window until next Open Sidecar.
-Busy keeps the latest value and backs off 250 ms, 500 ms, 1 s; five consecutive busy refusals
-unbind. Each window's seq only grows. No follow failure changes panel text or starts/raises
+Refused connection, signed 409 or failed proof unbinds that window. To recover a terminal
+follow failure, close the Sidecar window and click Open Sidecar again (a live-window click
+only raises it). An unanswered call retains the latest value, renews the channel and advances
+seq rather than reusing an uncertain counter. Busy and unanswered calls back off 250 ms,
+500 ms, 1 s; five consecutive such failures unbind. Each window's seq only grows. No follow failure changes panel text or starts/raises
 anything; quit/close starts no further request.
 
 ### 3.3 Test vectors
@@ -970,7 +972,9 @@ Do not send normal geometry for a rectangle smaller than 240 in either dimension
 work-area fallback for minimized/hidden. Spike D's one-window parked move median/p95 were
 113.65/188.99 ms; D2's immediate-send shared parked run 21.60/38.93 ms, fifth-reader unparked
 217.13/327.93 ms. Sampled upper-bound timings on one 1× display, not a promise or hardware
-qualification of second display/Retina. D2 real LO drags unqualified and quit 255 unexplained.
+qualification of second display/Retina. D2 real LO drags were unqualified. Q255 traced the
+255 exit to harness SIGTERM cleanup; exact-PID normal Quit returned 0. Final-byte native
+acceptance remains required.
 
 ## 9. Error codes and user texts
 
@@ -1148,16 +1152,25 @@ and `sidecar_launcher.on_terminate()`.
 `Launcher.open(...)` gains `follow=handle | None`. UNO listener XWindowListener +
 XTopWindowListener lives in hermes_sidebar.py, registry keyed by document, never panel-owned.
 Bind to the launching frame, not current document. Stop on frame disposal, document close or
-replacement in that frame, and quit; check binding immediately before send. Closing the deck
+replacement in that frame, and quit; check binding immediately before send. A view switch
+of the same document (including Print Preview) is not a replacement. Closing the deck
 does not stop following. A second same-document frame never takes over; closing the followed
 frame publishes window_closed locally and immediately fences following even if the document
 remains open. This terminal mailbox value is best-effort, not a wire-delivery guarantee:
-close cancels pending bounds admissions, and a document_closed release authoritatively ends
-the Sidecar session. Never delay the main thread or permit post-close bounds requests to
+close cancels pending bounds admissions. Closing or disposing only the launching frame
+does not release the document session: Sidecar and its reply stay open while another view
+holds the document, but following stops. Actual document unload or replacement releases
+the session. Never delay the main thread or permit post-close bounds requests to
 flush a terminal snapshot. An already admitted request may finish, but cannot revive the
 binding. A crash cannot rebind the old Sidecar; close/open again. On Windows nothing attaches or sends a follow key;
 adapter interfaces unchanged. Support kill switch HERMES_LO_SIDECAR_NO_FOLLOW=1 suppresses
 negotiation (independent of NO_NATIVE). Clicking Open Sidecar on an undocked window only raises.
+
+**Integrator amendment (Print Preview / follow robustness, no wire-format change).**
+Same-model view switches retain the listener; frame-only close stops following without
+releasing a still-open document session. Unanswered bounds calls use the existing bounded
+busy back-off on a fresh channel with increasing seq. The proof/MAC, route shapes and test
+vectors are unchanged; see 3.2 and the lifecycle rules above.
 
 ## 14. What the spikes did not cover, and notes for 0.5.1
 
@@ -1189,7 +1202,8 @@ Spaces/Stage Manager/tiling, long hand-drag feel, macOS Edge/Brave/Chromium, Int
 and LO versions, >8 windows and same-document multi-frame, managed browsers, future Chrome
 moveTo changes, manual NVDA/VoiceOver, macOS Firefox and alternative Windows default handlers
 remain unverified. Pause/Reattach for another display; no native Space coupling; no screen
-reader claim. D2 actual document drag was 0/3 and quit 255 unexplained; G6 must retest.
+reader claim. D2 actual document drag was 0/3; G6 must retest. Q255 traced exit 255 to
+harness SIGTERM cleanup, not normal Quit; exact-PID normal Quit returned 0.
 
 Spike W (investigation, not a Windows 0.5.1 feature): its implicit-sign-in disabling flag
 worked on the tested Edge build; placement was exact in physical pixels at 112% text scale.

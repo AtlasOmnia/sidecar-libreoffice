@@ -504,6 +504,34 @@ class FollowListenerTests(unittest.TestCase):
         self.assertIs(listener.frame, self.frame)
         self.launcher.register_follow_listener.assert_called_once_with(DOCUMENT["document_id"], listener.close)
 
+    def test_attached_without_followed_model_releases(self):
+        from unittest.mock import Mock
+        for controller in (None, Mock(getModel=Mock(return_value=None)),
+                           Mock(getModel=Mock(side_effect=RuntimeError("disposed")))):
+            self.launcher.on_document_closed.reset_mock()
+            self.frame.getController.return_value = Mock(getModel=Mock(return_value=self.model))
+            self.handle = FollowHandle()
+            self.launcher.follow_handle.return_value = self.handle
+            listener = self.attach()
+            self.frame.getController.return_value = controller
+            listener.frameAction(types.SimpleNamespace(Action="COMPONENT_ATTACHED"))
+            self.assertTrue(listener.closed)
+            self.launcher.on_document_closed.assert_called_once_with(DOCUMENT["document_id"])
+
+    def test_same_model_view_switch_keeps_listener_and_later_move(self):
+        listener = self.attach()
+        for action in ("COMPONENT_DETACHING", "COMPONENT_REATTACHED", "COMPONENT_ATTACHED"):
+            listener.frameAction(types.SimpleNamespace(Action=types.SimpleNamespace(value=action)))
+            self.assertFalse(listener.closed)
+            self.assertTrue(self.handle.alive)
+            self.assertIs(SIDEBAR._FOLLOW_LISTENERS[DOCUMENT["document_id"]], listener)
+            self.assertEqual(len(listener._registered), 4)
+            self.launcher.on_document_closed.assert_not_called()
+        self.window.getPosSize.return_value.X = 222
+        listener.windowMoved(None)
+        self.assertEqual(self.handle.values[-1][0], (222, 80, 1000, 700))
+        self.window.removeWindowListener.assert_not_called()
+
     def test_close_dispose_replacement_detach_every_owner_and_release_once(self):
         for event in ("windowClosed", "disposing", "replacement", "unload"):
             self.handle = FollowHandle()
@@ -511,10 +539,15 @@ class FollowListenerTests(unittest.TestCase):
             listener = self.attach()
             if event == "replacement":
                 listener.frameAction(types.SimpleNamespace(Action=types.SimpleNamespace(value="COMPONENT_DETACHING")))
+                self.assertTrue(self.handle.alive)
+                self.frame.getController.return_value.getModel.return_value = object()
+                listener.frameAction(types.SimpleNamespace(Action="COMPONENT_REATTACHED"))
+                self.frame.getController.return_value.getModel.return_value = self.model
             elif event == "unload":
                 listener.documentEventOccured(types.SimpleNamespace(EventName="OnUnload"))
             else:
                 getattr(listener, event)(None)
+                self.launcher.on_document_closed.assert_not_called()
             count = len(self.handle.values)
             listener.windowMoved(None)
             listener.disposing(None)
@@ -522,7 +555,7 @@ class FollowListenerTests(unittest.TestCase):
             self.assertFalse(self.handle.alive)
             self.assertEqual(self.handle.values[-1][:2], (None, "window_closed"))
             self.assertNotIn(DOCUMENT["document_id"], SIDEBAR._FOLLOW_LISTENERS)
-        self.assertEqual(self.launcher.on_document_closed.call_count, 4)
+        self.assertEqual(self.launcher.on_document_closed.call_count, 2)
         self.assertEqual(self.window.removeWindowListener.call_count, 4)
         self.assertEqual(self.frame.removeFrameActionListener.call_count, 4)
         self.assertEqual(self.model.removeDocumentEventListener.call_count, 4)

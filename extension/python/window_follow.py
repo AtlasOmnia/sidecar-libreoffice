@@ -234,8 +234,13 @@ class Follower:
         except Exception as exc:
             # LauncherBusy is imported lazily alongside the default client;
             # no error text is exposed to the panel or written to a log.
-            from sidecar_launcher import LauncherBusy
-            outcome = 'busy' if isinstance(exc, LauncherBusy) else 'failed'
+            from sidecar_launcher import LauncherBusy, LauncherError, NO_ANSWER
+            unanswered = (isinstance(exc, TimeoutError) or
+                          isinstance(exc, LauncherError) and
+                          str(exc) == NO_ANSWER.format(port=binding[1]))
+            # An uncertain answer may already have consumed the counter/seq.
+            # Renew the channel and advance seq; retain only the latest geometry.
+            outcome = 'busy' if isinstance(exc, LauncherBusy) or unanswered else 'failed'
         with self._gate:
             if outcome in ('busy', 'failed'):
                 self._client = None

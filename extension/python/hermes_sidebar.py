@@ -196,19 +196,27 @@ class _FollowListener(unohelper.Base, XWindowListener, XTopWindowListener,
         return None
 
     def windowClosed(self, _event: Any) -> None:
-        self.close(release=True)
+        # A second view may still hold the model. OnUnload owns document release.
+        self.close()
 
     def frameAction(self, event: Any) -> None:
         action = getattr(event.Action, "value", event.Action)
-        if action == "COMPONENT_DETACHING":
-            self.close(release=True)
+        if action not in ("COMPONENT_ATTACHED", "COMPONENT_REATTACHED"):
+            return  # Detaching also precedes a same-document view switch (Print Preview).
+        try:
+            controller = self.frame.getController()
+            same = controller is not None and controller.getModel() == self.model
+        except Exception:
+            same = False
+        if not same:
+            self.close(release=True)  # Another document, or none, now occupies this frame.
 
     def documentEventOccured(self, event: Any) -> None:
         if event.EventName == "OnUnload":
             self.close(release=True)
 
     def disposing(self, _event: Any) -> None:
-        self.close(release=True)
+        self.close()  # Disposal of the launching view is not document unload.
 
 
 def _attach_follow(document: Any, frame: Any, work_area: Any, launcher: Any) -> Any:
