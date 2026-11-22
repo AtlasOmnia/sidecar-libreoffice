@@ -929,7 +929,7 @@ class Launcher:
 
     def _release_closed(self, document_id: str, generation: int, closed_at: float,
                         launch_id: str | None = None, scoped: bool = False) -> None:
-        """E03: initial close plus three new-channel attempts, within four seconds.
+        """E03: one initial close attempt plus three retries within four seconds.
 
         A signed release answer (including refusal) is final. Only no-answer/unsigned busy
         permits retry. Every attempt carries the same captured launch id. Scoped releases
@@ -947,9 +947,12 @@ class Launcher:
                     if self._terminated or (not scoped and self._generations.get(document_id, 0) != generation):
                         return
                 left = closed_at + 4.0 - self._clock()
-                if left <= 0:
+                if offset != 0.0 and left <= 0:
                     return
-                deadline = time.monotonic() + min(0.5, left)
+                # A stalled mint/worker must still try its captured attachment once.
+                # Only retries expire four seconds after close; the initial pair
+                # always gets one bounded half-second call, never a new retry budget.
+                deadline = time.monotonic() + (0.5 if offset == 0.0 else min(0.5, left))
                 try:
                     client = self._new_client(timeout=0.5, deadline=deadline)
                     self._hello(client)

@@ -447,7 +447,9 @@ opened or a launch is in flight.
 A `document_closed` release with no answer or unsigned busy is retried on fresh channels
 at absolute offsets 0.5 s, 1.5 s and 3.5 s after close (initial attempt at 0), at most four
 attempts per attachment. Hello and release share each attempt's whole-call deadline,
-min(0.5 s, remaining four-second close budget); do not admit another attempt at/after 4 s.
+0.5 s for the initial attempt and min(0.5 s, remaining four-second close budget) for retries.
+The initial attempt still runs once if a mint or worker stalls past four seconds;
+never admit a retry at/after 4 s. This does not restart the retry budget.
 Never after quit begins or any signed answer, including refusal. No main-thread join or
 I/O-gate wait is added at close/quit. Each scoped retry uses the **same captured launch_id**,
 never the newest attachment for that document. Scoped old-attachment cleanup may continue

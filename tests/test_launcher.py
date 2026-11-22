@@ -918,6 +918,38 @@ class CloseReleaseRetries(unittest.TestCase):
             launcher.on_document_closed(document_id)
             self.assertEqual(len([c for c in self.client.calls if c[0] == "new"]), 1)
 
+    def test_initial_release_survives_worker_or_abandon_stall(self):
+        for scoped in (False, True):
+            for abandoned in (False, True):
+                with self.subTest(scoped=scoped, abandoned=abandoned):
+                    launcher = self.launcher()
+                    document_id = DOCUMENT["document_id"]
+                    closed_at = self.clock()
+                    self.clock.now += 5.0
+                    attempts = []
+                    from unittest.mock import Mock
+                    def make(timeout=L.CALL_TIMEOUT_SECONDS, deadline=None):
+                        attempts.append((timeout, deadline))
+                        client = Mock(port=12345)
+                        client.caps = ["attachment_release"]
+                        client.hello.return_value = {}
+                        client.release.side_effect = L.LauncherBusy()
+                        return client
+                    launcher._new_client = make
+                    if abandoned:
+                        launch = L._Launch(document_id)
+                        launch.closed_at = closed_at
+                        launch.scoped_release = scoped
+                        launch.launch_id = "B" * 22 if scoped else None
+                        with self.assertRaises(L._Cancelled):
+                            launcher._abandon(self.client, launch, None)
+                    else:
+                        launcher._release_closed(document_id, 0, closed_at,
+                                                 "B" * 22 if scoped else None, scoped)
+                    self.assertEqual(len(attempts), 1, "initial attempt must survive >4 s stall")
+                    self.assertEqual(attempts[0][0], 0.5)
+                    self.assertIsNotNone(attempts[0][1])
+
     def test_abandoned_launch_uses_the_same_retry_budget(self):
         launcher = self.launcher()
         launch = L._Launch(DOCUMENT["document_id"])

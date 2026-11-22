@@ -1,6 +1,6 @@
-# 0.5.1 draft release and evidence ledger
+# 0.5.1 candidate release and evidence ledger
 
-**Status: Unreleased; not a publication receipt.** This ledger separates the accepted candidate contract, historical observations and candidate gates. The README commands target the prospective v0.5.1 tag and must not be used until publication. Both README hashes now name the deterministic candidate archive: `6f08a2719e67164e5d5b4a8a5a6c940fddf5fa6a2e45f4e9e6a0cb209290fd51`. Matching build checks do not imply native acceptance or release approval.
+**Status: Unreleased; not a publication receipt.** This ledger separates the accepted candidate contract, historical observations and candidate gates. The README commands target the prospective v0.5.1 tag and must not be used until publication. Both README hashes now name the deterministic candidate archive: `5e9bcf95532ea8e5787a48779b335532e04650223352e86e0763da801b85b837`. Matching build checks do not imply native acceptance or release approval.
 
 ## Historical evidence — do not promote to 0.5.1
 
@@ -18,9 +18,9 @@
 
 The original 0.4.0 and 0.5.0 README/CHANGELOG results retain their dates, versions and owner attribution. Their earlier “not run” lists describe those releases, not fresh failures in 0.5.1.
 
-## Integrated-candidate observations
+## Initial integration observations — superseded candidate
 
-The following results use the candidate archive digest above and the unchanged shipped page. They are not release approval. Raw receipts are kept in the private integration evidence, not shipped in this repository.
+The following retained results belong to initial integration head `8bac5df` and archive `0e23e3571b5b77bbb953e6d8c27a206e1ff48fee2cf686653674cd53529b5d02`, not the new round-2 digest above. Their failures are historical observations, not claims about the merged fixes. Current round-2 results appear below. Raw receipts are kept in private integration evidence, not shipped in this repository.
 
 | Gate | Observed result and limits |
 | --- | --- |
@@ -39,6 +39,23 @@ The following results use the candidate archive digest above and the unchanged s
 | Real gateway/model | Pending one bounded owner-run macOS candidate chat (G9), performed by Jonathan. No gateway/model was started by integration. |
 | Catalog publication/admission | Pending publication, full public pin, separate catalog submission and public update check. Local YAML remains a template. |
 
+
+## Integration round 2 — merged fix packages
+
+The deterministic archive at the top of this ledger combines cold-channel latency (A), native resize batching (L), attachment-scoped release (B1, protocol 5.1), and Print Preview lifecycle/recovery (PP). Following remains OFF by default. This is a candidate, not publication or unconditional release acceptance. The private `INTEGRATION-2-REPORT.md` records exact head, commands, native latency and mixed-pair receipts, CI URL, all failures and cleanup.
+
+| Gate | Observed round-2 result and boundary |
+| --- | --- |
+| Full suite | Twice: 709 tests, five skips, OK; 261.897 s and 260.948 s, with TMPDIR unset. Protected ownership/lifecycle bytes unchanged. Later documentation-only edits do not change measured extension/page/plugin executable bytes; final-head private CI is recorded separately. |
+| E03 stalled release | RED: all four legacy/scoped × worker/abandoned-mint cases made zero attempts after a five-second stall. GREEN: exactly one bounded initial attempt, no expired retry or restarted budget. The real-handler attachment lifetime matrix also passes. |
+| HTTP / independent stub | Real plugin 37 passes + four timing skips, then all three feasible slow rows pass; only the literal twelve-hour row remains unobserved. Stub 41/41 passes. |
+| Browser / accessibility | Shipped sidebar against real plugin: 21/21 browser checks pass. Follow-page checks pass against real plugin and independent stub. The historical fixture lacks `follow-status`, `reattach-button`, `follow-toggle`: its two section-7.3 ID failures are retained separately, not a shipped-sidebar failure or passing expanded aggregate. |
+| Eight-reader transport / Stop | Suite stress: 2,400 signed bounds in 30.061 s, all eight readers progress, maximum four parked, eight Stops, maximum Stop 6.295 ms, two page loads, zero HTTP errors. Synthetic HTTP, not eight native visible pages. |
+| Native Print Preview | Installed final archive + real plugin/fake Runs API, disposable profiles: Writer and Calc OFF/ON preview open/close during slow replies; no Stop, replies render/complete, same-model listeners survive and ON following resumes. Writer second-view close preserves the reply/document. |
+| Native callbacks / title-bar input | Calc actual installed bound listener: 1,950 callbacks, raw p100 0.092417 ms, below 5 ms. Three real guarded LO title-bar drags displace the known document and following lands. |
+| Native close/reopen | Same Calc file closed and reopened while three authenticated old release handlers were held. Replacement page opens, reply completes, no replacement Stop. LibreOffice gives the reopened model a different document ID; the same-ID attachment guarantee is proven separately by the real-handler unit matrix, not inferred from this native run. |
+| Windows / ATLAS — partial | Installed final archive in limited interactive session; real posted panel click opens default Firefox tab, formatted turn, lost Send/Try again (one run), Stop and no-follow pass. Last-document close did not remove the tab within the harness's three-second check; only host_quit release was observed, so independent document_closed release is not qualified. Later cleanup sees zero Sidecar tabs. Fresh SSH confirms no test files/tasks/soffice, and no roaming LibreOffice profile. This is not an all-green G7. |
+| Publication / owner-only work | No public tag, push, release, catalog write or real gateway/model run. G9 remains owner-run. Manual screen-reader and hardware limitations below are not waived. |
 
 ## Explicitly unverified environments and behavior
 

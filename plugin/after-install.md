@@ -2,7 +2,7 @@
 
 The plugin needs its companion **LibreOffice extension**, which Hermes does not install.
 
-**0.5.1 draft — not published.** These are prospective release instructions. Wait for the release tag and catalog update; the extension hash and release date are not final.
+**0.5.1 draft — not published.** These are prospective release instructions. Wait for the release tag and catalog update; the candidate hash is recorded in the README and the release date is not final.
 
 1. **Restart Hermes** so the plugin loads: `hermes gateway restart`, or reopen Hermes Desktop. Upgrading from a plugin build before 0.4.0 (`libreoffice-live`)? Remove it (`hermes plugins remove libreoffice-live`) and restart the gateway once: its chat listener keeps port 8661 until the gateway restarts.
 2. **Build the extension from the release tag** (Python 3.9+; Windows: use `py` and `scripts\build_oxt.py`):
@@ -13,7 +13,7 @@ The plugin needs its companion **LibreOffice extension**, which Hermes does not 
    python3 scripts/build_oxt.py --check
    ```
 
-   `--check` prints the SHA-256 and compares it with the one in the README for a published release. An Unreleased 0.5.1 draft with both hash placeholders instead prints an interim digest and says it is NOT a release hash match.
+   `--check` prints the SHA-256 and compares it with the integrated candidate hash in the README. A matching build is not proof of publication.
 
 3. **Install it in LibreOffice:** Tools → Extensions… → Add… → `dist/sidecar-libreoffice.oxt`, then Close and Restart Now (or Restart Later, then quit and reopen LibreOffice). Upgrading from 0.4.0 or 0.5.0: remove nothing; the 0.5.1 extension has the same identifier and replaces it, and your pairing and chat settings stay. The 0.5.0→0.5.1 installed upgrade is not yet verified. Older than 0.4.0: remove the earlier Sidecar or Hermes for LibreOffice extension in the same dialog, because LibreOffice installs the new one alongside it and both would use port 8660. If the sidebar then shows the Properties deck, click the green S tab once.
 4. **Pair:** in LibreOffice choose Tools → Copy Sidecar pairing token, then run

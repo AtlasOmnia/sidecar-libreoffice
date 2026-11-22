@@ -12,7 +12,7 @@ Platforms: macOS and Windows. The Sidecar window opens as an app window on macOS
 
 ## Install
 
-**0.5.1 draft — not published.** The commands below describe the planned release tag. Do not use them until that tag and the catalog update are published. The final extension hash and release date are still pending; a successful draft build is not release verification.
+**0.5.1 draft — not published.** The commands below describe the planned release tag. Do not use them until that tag and the catalog update are published. The integrated candidate hash is recorded below; the release date and publication remain pending. A matching build is not release approval.
 
 You need LibreOffice with Python-UNO (the standard installers for macOS and Windows include it), Hermes Agent 0.23.1 or later, `git`, and Python 3.9 or later to build the extension (macOS: `python3`, which comes with the Xcode Command Line Tools, `xcode-select --install`; Windows: Python from python.org, run as `py`).
 
@@ -50,7 +50,7 @@ py scripts\build_oxt.py                   # writes dist\sidecar-libreoffice.oxt
 Get-FileHash dist\sidecar-libreoffice.oxt -Algorithm SHA256
 ```
 
-Expected SHA-256 of `sidecar-libreoffice.oxt` for v0.5.1: `6f08a2719e67164e5d5b4a8a5a6c940fddf5fa6a2e45f4e9e6a0cb209290fd51`. The archive is stored uncompressed with fixed metadata, so any CPython 3.9 or later on macOS or Windows builds these bytes from the `v0.5.1` tag (checked for 0.5.0 with CPython 3.9, 3.11, 3.13 and 3.14 on macOS and python.org 3.14 on Windows 11).
+Expected SHA-256 of `sidecar-libreoffice.oxt` for v0.5.1: `5e9bcf95532ea8e5787a48779b335532e04650223352e86e0763da801b85b837`. The archive is stored uncompressed with fixed metadata, so any CPython 3.9 or later on macOS or Windows builds these bytes from the `v0.5.1` tag (checked for 0.5.0 with CPython 3.9, 3.11, 3.13 and 3.14 on macOS and python.org 3.14 on Windows 11).
 
 In LibreOffice choose **Tools → Extensions…** (**Extension Manager…** in older versions) **→ Add…**, pick `dist/sidecar-libreoffice.oxt` (Windows: `%USERPROFILE%\sidecar-libreoffice\dist\sidecar-libreoffice.oxt`) and accept any prompt. Opening the `.oxt` file with LibreOffice (double-click) does the same. Check that **Sidecar for LibreOffice** 0.5.1 by Atlas Omnia is listed and enabled, then choose **Close**; when LibreOffice asks to restart, choose **Restart Now**, or **Restart Later** and then quit and reopen LibreOffice. Do not use `unopkg add`.
 
@@ -120,7 +120,7 @@ If the browser crashes, *Sidecar is already open* can remain for up to 90 second
 
 ## Tested versions
 
-**0.5.1 draft:** no frozen-candidate native, browser, accessibility, CI, installed-upgrade or real-gateway pass is claimed here. The older results below keep their original versions and attribution; they do not verify optional following. Manual VoiceOver and NVDA are not required for 0.5.1 and were not run; automated accessibility checks, including the new controls, remain required. The real-gateway candidate check is owner-run on macOS and is pending. See the repository’s `docs/release-0.5.1.md` for the tested/not-run ledger.
+**0.5.1 candidate:** observed native, browser, automated-accessibility and compatibility checks are scoped in the release evidence ledger; they are not release approval or a real-gateway pass. The older results below keep their original versions and attribution; they do not verify optional following. Manual VoiceOver and NVDA are not required for 0.5.1 and were not run; automated accessibility checks, including the new controls, remain required. The real-gateway candidate check is owner-run on macOS and is pending. See the repository’s `docs/release-0.5.1.md` for the tested/not-run ledger.
 
 **Historical 0.5.0 evidence follows.**
 

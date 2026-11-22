@@ -1,6 +1,6 @@
 # Follow LibreOffice
 
-0.5.1 draft: this page describes the accepted candidate behavior, not an installed acceptance pass. See [release evidence](release-0.5.1.md) for what has and has not run.
+0.5.1 candidate: this page describes the implemented behavior, not an unconditional acceptance pass. See [release evidence](release-0.5.1.md) for what has and has not run.
 
 ## Turn it on — or keep it off
 

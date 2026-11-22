@@ -6,7 +6,7 @@ Hermes reads and edits the Calc, Writer and Impress documents you already have o
 
 The sidebar contains a status line and **Open Sidecar**; the conversation is in a separate browser window, using **the same pinned Omnia styling** as Sidecar for Excel. This is not a claim of identical computed layout.
 
-[Historical 0.4.0 screenshots](docs/assets/screenshots/README.md) show the old native panel, not the current window. New 0.5.1 light/dark screenshots will be added after the page freezes; no current-window screenshot is claimed in this draft.
+[Historical 0.4.0 screenshots](docs/assets/screenshots/README.md) show the old native panel, not the current window. [0.5.1 light/dark page renders](docs/assets/screenshots/0.5.1/) show following, undocked and paused states using headless recorder geometry; they are not native-placement evidence.
 
 Two parts, both in this repository:
 
@@ -17,7 +17,7 @@ Platforms: macOS and Windows. The Sidecar window opens as an app window on macOS
 
 ## Install
 
-**0.5.1 draft — not published.** The commands below describe the planned release tag. Do not use them until that tag and the catalog update are published. The final extension hash and release date are still pending; a successful draft build is not release verification.
+**0.5.1 draft — not published.** The commands below describe the planned release tag. Do not use them until that tag and the catalog update are published. The integrated candidate hash is recorded below; the release date and publication remain pending. A matching build is not release approval.
 
 You need:
 
@@ -61,7 +61,7 @@ py scripts\build_oxt.py                   # writes dist\sidecar-libreoffice.oxt
 Get-FileHash dist\sidecar-libreoffice.oxt -Algorithm SHA256
 ```
 
-Expected SHA-256 of `sidecar-libreoffice.oxt` for v0.5.1: `6f08a2719e67164e5d5b4a8a5a6c940fddf5fa6a2e45f4e9e6a0cb209290fd51`. The archive holds only `extension/` files plus `LICENSE` and `NOTICE`, stored uncompressed with fixed timestamps, permissions and order, so the hash does not depend on the zlib your Python uses or on the operating system: the build is reproducible with any CPython 3.9 or later on macOS and Windows. For 0.5.0 the same source built these bytes with CPython 3.9, 3.11, 3.13 and 3.14 on macOS and with python.org 3.14 on Windows 11 (0.4.0: 3.9 to 3.14 on macOS, python.org 3.11 to 3.14 on Windows 11). The repository checks out with LF line endings on every platform (`.gitattributes`), also with `core.autocrlf=true`, so a Windows clone builds the same bytes. A build from a commit other than the `v0.5.1` tag can have another hash.
+Expected SHA-256 of `sidecar-libreoffice.oxt` for v0.5.1: `5e9bcf95532ea8e5787a48779b335532e04650223352e86e0763da801b85b837`. The archive holds only `extension/` files plus `LICENSE` and `NOTICE`, stored uncompressed with fixed timestamps, permissions and order, so the hash does not depend on the zlib your Python uses or on the operating system: the build is reproducible with any CPython 3.9 or later on macOS and Windows. For 0.5.0 the same source built these bytes with CPython 3.9, 3.11, 3.13 and 3.14 on macOS and with python.org 3.14 on Windows 11 (0.4.0: 3.9 to 3.14 on macOS, python.org 3.11 to 3.14 on Windows 11). The repository checks out with LF line endings on every platform (`.gitattributes`), also with `core.autocrlf=true`, so a Windows clone builds the same bytes. A build from a commit other than the `v0.5.1` tag can have another hash.
 
 In LibreOffice choose **Tools → Extensions…** (**Extension Manager…** in older versions) **→ Add…**, pick `dist/sidecar-libreoffice.oxt` (Windows: `%USERPROFILE%\sidecar-libreoffice\dist\sidecar-libreoffice.oxt`) and accept any prompt. Opening the `.oxt` with LibreOffice (double-click it) does the same. Check that **Sidecar for LibreOffice** 0.5.1 by Atlas Omnia is listed and enabled, then choose **Close**. LibreOffice asks to restart: choose **Restart Now**, or **Restart Later** and then quit and reopen LibreOffice. Do not use `unopkg` (see *Platform notes*).
 
@@ -115,7 +115,7 @@ If a tool returns `Auth`, the token is missing or stale: repeat step 3 (and rest
 
 ## Tested versions
 
-**0.5.1 draft:** no frozen-candidate native, browser, accessibility, CI, installed-upgrade or real-gateway pass is claimed here. The older results below keep their original versions and attribution; they do not verify optional following. Manual VoiceOver and NVDA are not required for 0.5.1 and were not run; automated accessibility checks, including the new controls, remain required. The real-gateway candidate check is owner-run on macOS and is pending. See the [tested/not-run ledger](docs/release-0.5.1.md).
+**0.5.1 candidate:** observed native, browser, automated-accessibility and compatibility checks are scoped in the release evidence ledger; they are not release approval or a real-gateway pass. The older results below keep their original versions and attribution; they do not verify optional following. Manual VoiceOver and NVDA are not required for 0.5.1 and were not run; automated accessibility checks, including the new controls, remain required. The real-gateway candidate check is owner-run on macOS and is pending. See the [tested/not-run ledger](docs/release-0.5.1.md).
 
 **0.5.0, the Sidecar window.** On macOS 27.2.1 (Apple silicon), LibreOffice 26.8.2.2 and Chrome 158.0.8127.36, the candidate at `797aeb5` (the released extension bytes) ran in a disposable profile against the real plugin with a fake Runs API: Open Sidecar beside Calc, a formatted reply, Stop, New chat, a second click raising the same window, closing a document during launch (no extra window), and quitting LibreOffice (browser gone within a second). Safari 27.2 tab mode ran the real launcher outside LibreOffice with app-mode browser discovery disabled: launch, formatted reply, lost Send followed by Try again (one run), Stop, and host-quit release closing its own tab; history retained the spent launch link, as disclosed.
 
@@ -222,7 +222,7 @@ The sidebar chat is off by default. Once you turn it on (*Turn on the sidebar ch
 
 - Closing or reloading the Sidecar window ends its connection and stops a reply in progress; what Hermes already changed stays in the document, one undo step per change. A reloaded window shows *Click Open Sidecar in LibreOffice to reconnect.* A reconnected window does not show the earlier messages.
 - Closing the document closes its Sidecar window (*LibreOffice closed this document.*). If a document-close release gets no answer or the endpoint is busy, the extension retries within a bounded budget (at 0.5, 1.5 and 3.5 seconds after the close). With both halves supporting `attachment_release`, every attempt targets the captured launch id, so a delayed old close cannot end a reopened document's replacement session or revoke its pending code. Mixed pairs with an old launcher or a plugin without that capability retain document-wide best-effort release: a delayed close can still affect a reopened document. This improves recovery but does not guarantee delivery: if every attempt fails, a still-polling window can remain connected until you close it or LibreOffice quits; 90 seconds is not a general session-expiry timer. Quitting LibreOffice closes the Sidecar windows, and on macOS the extension asks the browser it started to quit. A window that is hidden or minimized can notice this late, up to about a minute.
-- If a window stops following a running reply for 90 seconds (the browser was closed without notice, for example), the plugin stops that reply. For up to those 90 seconds the panel can say *Sidecar is already open* although no window is open.
+- If a window stops following a running reply for 90 seconds (the browser was closed without notice, for example), the plugin stops that reply. The panel can say *Sidecar is already open* for about two minutes after a browser disappears, because an outstanding window poll can extend detection.
 - If LibreOffice crashes, the Sidecar window stays open: chat may still answer, but the document tools fail until LibreOffice runs again.
 
 **While the sidebar chat is off (the default),** the panel shows *Chat is off in Hermes.* and *See README ▸ Sidebar chat.*, and no browser is started. Nothing is broken: the chat endpoint is simply not running. The document tools work from any Hermes chat (`hermes chat -t sidecar-libreoffice`).
@@ -243,7 +243,7 @@ Other panel messages:
 
 ### Follow LibreOffice (optional, macOS)
 
-**Follow LibreOffice is off by default**, separately from the sidebar chat. In an eligible macOS app window, enable **Settings → Follow LibreOffice**. The choice is remembered in that dedicated browser profile across sessions; missing, invalid or unavailable storage means off. Tabs, Windows, older extension/plugin pairs and a support-disabled launch have no follow control. Turning it off stops follow placement and window polling, but does not close the chat.
+**Follow LibreOffice is off by default**, separately from the sidebar chat. In an eligible macOS app window, enable **Settings → Follow LibreOffice**. The choice is remembered in that dedicated browser profile across sessions; missing, invalid or unavailable storage means off. Tabs, Windows, older extension/plugin pairs and a support-disabled launch have no follow control. Turning it off stops follow placement and window polling, but does not close the chat. Even while it is off, the extension posts the launching window’s rectangle and state to the local plugin, up to ten times a second while it changes. Start LibreOffice with `HERMES_LO_SIDECAR_NO_FOLLOW=1` to stop that transport.
 
 When on, Sidecar follows the document window that opened it, without raising or focusing itself. Moving **or resizing** Sidecar by hand undocks it: following stops until **Reattach** or a new session. **Reattach restores the 400-point width**; it does not remember a hand-chosen width. **Open Sidecar** only raises the browser; it does not reattach or reliably select the correct document’s browser window.
 

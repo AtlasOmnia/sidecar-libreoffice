@@ -8,4 +8,4 @@ The original screenshots were real model chats on made-up data from `docs/fixtur
 - [Writer](writer-from-sheet.png): the chat added a sentence from the spreadsheet summary as its own paragraph.
 - [Impress, dark theme](impress-new-slide-dark.png): the chat added slide 2, Units by region, from the spreadsheet, highest region first.
 
-Fresh 0.5.1 app-window screenshots must be captured after page freeze: 400-point width, light and dark, following, undocked/Reattach and paused states, with no clipped controls. No replacement screenshot is supplied or implied by this draft. Windows remains a normal default-browser tab; do not label an app-window screenshot as Windows 0.5.1 behavior.
+The `0.5.1/` directory supplies six 400-pixel light/dark shipped-page renders of following, undocked/Reattach and paused states. They use headless recorder geometry and are not native-placement evidence. Windows remains a normal default-browser tab; do not label an app-window screenshot as Windows 0.5.1 behavior.

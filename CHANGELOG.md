@@ -4,7 +4,7 @@ All notable changes to Sidecar for LibreOffice are documented here. The format f
 
 ## [0.5.1] - Unreleased
 
-**Draft release text, not release acceptance.** The changes below describe the accepted 0.5.1 contract; implementation is delivered by separate lanes and must be checked on the combined frozen candidate. Final hashes, screenshots, release date, private CI and public catalog publication are pending. Older tested results retain their original attribution in the 0.5.0 section.
+**Integrated candidate, not release approval.** The four fix packages are merged; the deterministic archive hashes and page renders are recorded. Candidate acceptance is scoped in `docs/release-0.5.1.md` and the private integration report. Release date and public catalog publication remain pending. Older tested results retain their original attribution in the 0.5.0 section.
 
 ### Added
 - Optional **Follow LibreOffice** for an eligible macOS app window, **off by default**, separately from chat. Settings remembers the choice in the dedicated browser profile; missing, invalid or unavailable storage means off. No new plugin setting. Tabs and Windows do not follow.
