@@ -6,6 +6,10 @@ Hermes reads and edits the Calc, Writer and Impress documents you already have o
 
 The sidebar contains a status line and **Open Sidecar**; the conversation is in a separate browser window, using **the same pinned Omnia styling** as Sidecar for Excel. This is not a claim of identical computed layout.
 
+![Sidecar for LibreOffice 0.5.1 on macOS: a Calc spreadsheet with the Sidecar window following on its right, after Hermes wrote 42 into A1](docs/assets/screenshots/0.5.1/macos-calc-following.png)
+
+*0.5.1 on macOS, captured during the real-model acceptance run on 2026-11-22: Follow LibreOffice is on, so the Sidecar window sits against Calc's right edge. The demo spreadsheet's A1 header was overwritten on purpose by the test prompt.*
+
 [Historical 0.4.0 screenshots](docs/assets/screenshots/README.md) show the old native panel, not the current window. [0.5.1 light/dark page renders](docs/assets/screenshots/0.5.1/) show following, undocked and paused states using headless recorder geometry; they are not native-placement evidence.
 
 Two parts, both in this repository:
