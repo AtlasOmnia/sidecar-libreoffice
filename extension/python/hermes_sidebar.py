@@ -174,7 +174,9 @@ class _FollowListener(unohelper.Base, XWindowListener, XTopWindowListener,
         self._copy()
 
     def windowMinimized(self, _event: Any) -> None:
-        if not self.closed and self.handle.alive:
+        if self.hidden:
+            self._copy()
+        elif not self.closed and self.handle.alive:
             self.handle.update(None, "minimized", self.work_area)
 
     def windowNormalized(self, _event: Any) -> None:

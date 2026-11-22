@@ -611,6 +611,8 @@ class Launcher:
     def configure(self, read_token: Callable[[], str]) -> None:
         """Where the pairing token is read from (the bridge folder of this profile)."""
         self._read_token = read_token
+        if self._follower is not None:
+            self._follower.configure(read_token)
 
     def register_follow_listener(self, document_id: str, close: Callable[[], None]) -> None:
         """UNO main thread only, like document-close and termination hooks."""
@@ -623,6 +625,7 @@ class Launcher:
         if self._follower is None:
             import window_follow
             self._follower = window_follow.Follower()
+            self._follower.configure(self._read_token)
         handle = self._follow_handles.get(document_id)
         if handle is None or not handle.alive:
             handle = self._follow_handles[document_id] = self._follower.attach(document_id)

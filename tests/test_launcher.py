@@ -832,6 +832,18 @@ class FollowWiring(unittest.TestCase):
                 launcher.open(DOCUMENT, None, None, None, self.report, follow=handle)
                 handle.bind.assert_not_called()
 
+    def test_follower_uses_the_configured_safe_token_reader(self):
+        from unittest.mock import Mock, patch
+        import window_follow
+        launcher = self.launcher()
+        follower = Mock()
+        with patch.object(window_follow, "Follower", return_value=follower):
+            launcher.follow_handle(DOCUMENT["document_id"])
+        follower.configure.assert_called_once_with(launcher._read_token)
+        reader = lambda: TOKEN
+        launcher.configure(reader)
+        follower.configure.assert_called_with(reader)
+
     def test_close_and_quit_stop_handles_and_main_thread_listeners(self):
         launcher = self.launcher()
         handle = self.handle()
