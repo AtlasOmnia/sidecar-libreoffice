@@ -88,6 +88,29 @@ class OxtPackageTests(unittest.TestCase):
         listed = {line.split()[0] for line in block.splitlines() if line.strip()}
         self.assertEqual(set(BUILD.FILES + BUILD.ROOT_FILES), listed)
 
+    def test_check_allows_only_a_consistent_unreleased_draft(self):
+        marker = "D-FINAL-OXT-SHA256"
+        expected = f"Expected SHA-256 of `sidecar-libreoffice.oxt` for v0.5.1: `{marker}`"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "plugin").mkdir()
+            readme = root / "README.md"
+            readme.write_text(expected, encoding="utf-8")
+            (root / "plugin/README.md").write_text(expected, encoding="utf-8")
+            (root / "CHANGELOG.md").write_text("## [0.5.1] - Unreleased", encoding="utf-8")
+            with mock.patch.object(BUILD, "ROOT", root), mock.patch.object(BUILD, "README", readme), \
+                    mock.patch.object(BUILD, "SOURCE", ROOT / "extension"), \
+                    mock.patch.object(BUILD, "ROOT_FILES", []), \
+                    mock.patch.object(BUILD, "OUTPUT", root / "draft.oxt"), mock.patch("builtins.print"):
+                BUILD.main(["--check"])
+                (root / "CHANGELOG.md").write_text("## [0.5.1] - 2026-11-21", encoding="utf-8")
+                with self.assertRaises(SystemExit):
+                    BUILD.main(["--check"])
+                (root / "CHANGELOG.md").write_text("## [0.5.1] - Unreleased", encoding="utf-8")
+                (root / "plugin/README.md").write_text("missing placeholder", encoding="utf-8")
+                with self.assertRaises(SystemExit):
+                    BUILD.main(["--check"])
+
     def test_the_built_file_and_extension_identifier_use_atlas_omnia_names(self):
         self.assertEqual(BUILD.OUTPUT.name, "sidecar-libreoffice.oxt")
         description = (ROOT / "extension" / "description.xml").read_text(encoding="utf-8")

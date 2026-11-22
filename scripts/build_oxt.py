@@ -71,6 +71,18 @@ def main(argv: list[str] | None = None) -> None:
     print(f"built {OUTPUT}")
     if argv and "--check" in argv:
         digest = hashlib.sha256(OUTPUT.read_bytes()).hexdigest()
+        readme = README.read_text(encoding="utf-8")
+        marker = "D-FINAL-OXT-SHA256"
+        if marker in readme:
+            plugin_readme = (ROOT / "plugin" / "README.md").read_text(encoding="utf-8")
+            changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+            expected = f"Expected SHA-256 of `sidecar-libreoffice.oxt` for v0.5.1: `{marker}`"
+            if (readme.count(marker) != 1 or plugin_readme.count(marker) != 1
+                    or expected not in readme or expected not in plugin_readme
+                    or "## [0.5.1] - Unreleased" not in changelog):
+                raise SystemExit("draft .oxt placeholders require matching READMEs and an unreleased 0.5.1")
+            print(f"sha256     {digest}\ndocumented {marker} (unreleased draft; NOT a release hash match)")
+            return
         documented = documented_sha256()
         print(f"sha256     {digest}\ndocumented {documented}")
         if digest != documented:

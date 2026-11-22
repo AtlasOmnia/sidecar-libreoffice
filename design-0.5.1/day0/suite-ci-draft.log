@@ -1,0 +1,274 @@
+..............mutation failed after it started: RuntimeError: protect failed
+.....mutation failed after it started: BridgeFault: LibreOffice failed part-way through this change (AttributeError); there is no undo step for it. The bridge took back what had changed (compensated: true); re-read the document to confirm.
+mutation failed after it started: BridgeFault: LibreOffice failed part-way through this change (AttributeError); there is no undo step for it. The bridge could not take back what had changed (compensated: false); check the document.
+.............................................................................libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+.......libreoffice chat: 1 user Stop request(s) had not ended when the endpoint closed; they were cancelled and send nothing more
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+......libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+.libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+..............mutation failed after it started: RuntimeError: write failed
+.main-thread operation failed: RuntimeError: uno read failed
+.main-thread operation failed: RuntimeError: read failed
+.....mutation failed after it started: RuntimeError: insert failed midway
+.mutation failed after it started: ValueError: half written
+....................................................................................................................................s......................s.......................................................ssss........libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+.libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+..libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+..libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+..libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+...libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+.libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+.libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+.libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+...libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+.libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 4 run(s) not confirmed stopped; they may still be running
+.libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+.libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+.libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run became known after the endpoint closed; asking it to stop (the tool fence may already be removed)
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+.libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+.libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+.libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 4 run(s) not confirmed stopped; they may still be running (closed on an event loop, so it could not wait)
+libreoffice chat endpoint closed with 4 run(s) not confirmed stopped; they may still be running
+.libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 4 run(s) not confirmed stopped; they may still be running
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 4 run(s) not confirmed stopped; they may still be running
+..............................libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running (closed on an event loop, so it could not wait)
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+.libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+.libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+....libreoffice chat: 1 user Stop request(s) had not ended when the endpoint closed; they were cancelled and send nothing more
+.libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 2 run(s) not confirmed stopped; they may still be running
+.libreoffice chat: 1 user Stop request(s) had not ended when the endpoint closed; they were cancelled and send nothing more
+libreoffice chat: 1 user Stop request(s) had not ended when the endpoint closed; they were cancelled and send nothing more
+.libreoffice chat: 1 user Stop request(s) had not ended when the endpoint closed; they were cancelled and send nothing more
+libreoffice chat: 1 user Stop request(s) had not ended when the endpoint closed; they were cancelled and send nothing more
+..libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running (closed on an event loop, so it could not wait)
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run became known after the endpoint closed; asking it to stop (the tool fence may already be removed)
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running (closed on an event loop, so it could not wait)
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+.libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running (closed on an event loop, so it could not wait)
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run became known after the endpoint closed; asking it to stop (the tool fence may already be removed)
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running (closed on an event loop, so it could not wait)
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+.libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run became known after the endpoint closed; asking it to stop (the tool fence may already be removed)
+libreoffice chat: 1 user Stop request(s) had not ended when the endpoint closed; they were cancelled and send nothing more
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: 1 user Stop request(s) had not ended when the endpoint closed; they were cancelled and send nothing more
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+.libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: a panel run became known after the endpoint closed; asking it to stop (the tool fence may already be removed)
+libreoffice chat: 1 user Stop request(s) had not ended when the endpoint closed; they were cancelled and send nothing more
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: 1 user Stop request(s) had not ended when the endpoint closed; they were cancelled and send nothing more
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+..libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+.libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat: 1 user Stop request(s) had not ended when the endpoint closed; they were cancelled and send nothing more
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+..libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+.libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+./Volumes/Development SSD/Repositories/sidecar-libreoffice-0.5.1/tests/test_undo_action_dispose.py:34: ResourceWarning: unclosed <socket.socket fd=8, family=AddressFamily.AF_INET, type=SocketKind.SOCK_STREAM, proto=0, laddr=('127.0.0.1', 65413)>
+  gc.collect()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Volumes/Development SSD/Repositories/sidecar-libreoffice-0.5.1/tests/test_undo_action_dispose.py:34: ResourceWarning: unclosed <socket.socket fd=9, family=AddressFamily.AF_INET, type=SocketKind.SOCK_STREAM, proto=0, laddr=('127.0.0.1', 65415)>
+  gc.collect()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+.........libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running (closed on an event loop, so it could not wait)
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+.libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+libreoffice chat endpoint closed with 1 run(s) not confirmed stopped; they may still be running
+...................................................................................................................................libreoffice chat: a panel run could not be confirmed finished or stopped; it stays tracked
+...............mutation failed after it started: RuntimeError: injected failure
+......mutation failed after it started: RuntimeError: injected failure
+../Volumes/Development SSD/Repositories/sidecar-libreoffice-0.5.1/extension/python/office_ops.py:427: ResourceWarning: unclosed <socket.socket fd=8, family=AddressFamily.AF_INET, type=SocketKind.SOCK_STREAM, proto=0, laddr=('127.0.0.1', 49169)>
+  return ("paragraph", str(getattr(block, "String", "")))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Volumes/Development SSD/Repositories/sidecar-libreoffice-0.5.1/extension/python/office_ops.py:427: ResourceWarning: unclosed <socket.socket fd=9, family=AddressFamily.AF_INET, type=SocketKind.SOCK_STREAM, proto=0, laddr=('127.0.0.1', 49173)>
+  return ("paragraph", str(getattr(block, "String", "")))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+...................
+----------------------------------------------------------------------
+Ran 613 tests in 188.293s
+
+OK (skipped=6)
+event-loop reload: 0/200 not started; maximum unload 0.000418 s
+{
+  "oxt": "/tmp/tmpmd8w1762/sidecar-libreoffice.oxt",
+  "oxt_sha256": "81544bfe2c68125cbe166a76a4de6c73a11d2f5601804f229872722e1b499c1e",
+  "candidates": [
+    {
+      "dir": "/tmp/tmpmd8w1762/profile/user/uno_packages/cache/uno_packages/lu1.tmp_/sidecar-libreoffice.oxt",
+      "mismatched": [
+        "python/hermes_bridge.py"
+      ]
+    }
+  ],
+  "installed_match": null
+}
+{
+  "oxt": "/tmp/tmpmd8w1762/sidecar-libreoffice.oxt",
+  "oxt_sha256": "81544bfe2c68125cbe166a76a4de6c73a11d2f5601804f229872722e1b499c1e",
+  "candidates": [
+    {
+      "dir": "/tmp/tmpmd8w1762/profile/user/uno_packages/cache/uno_packages/lu1.tmp_/sidecar-libreoffice.oxt",
+      "mismatched": []
+    }
+  ],
+  "installed_match": "/tmp/tmpmd8w1762/profile/user/uno_packages/cache/uno_packages/lu1.tmp_/sidecar-libreoffice.oxt"
+}
