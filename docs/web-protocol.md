@@ -265,7 +265,15 @@ held by the worker during I/O; the worker never reads UNO. D2 measured a callbac
 11.4262 ms over 1,866 callbacks (NOT PASS); actual production callback wall time must be
 measured at p100 ≤5 ms over ≥1000 callbacks. A hand-off design is required, not a waiver.
 Send the first change immediately, then bounds starts at least 100 ms apart with a trailing
-latest value. **Cold-channel amendment (0.5.1 fix A):** all request admissions remain
+latest value. **Resize-burst amendment (0.5.1 fix L):** a size change from a previously
+sent valid normal rectangle opens one fixed 16 ms latest-value batch. The native move
+notification can follow the intermediate resized-at-old-position notification; do not
+spend an admission on that intermediate geometry. Later updates do not extend this batch,
+other windows remain eligible, pure moves and initial/cold snapshots remain immediate.
+While work is pending, timed worker sleeps are at most 10 ms before rechecking the same
+admission deadlines (background native timers may oversleep); idle waits remain indefinite.
+This changes neither the four-slot turns-first park policy nor its 250 ms unparked retry,
+and adds no requests or threads. **Cold-channel amendment (0.5.1 fix A):** all request admissions remain
 at least 100 ms apart except the first bounds on a successfully opened channel, for the
 same still-live binding. That bounds may start immediately after its hello completes.
 An orphaned or failed hello does not exempt a different hello or binding from spacing.

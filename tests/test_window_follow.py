@@ -118,6 +118,90 @@ class FollowTests(unittest.TestCase):
     def change(self, x):
         self.handle.update((x, 200, 700, 600), 'normal', AREA)
 
+    def test_resize_burst_batches_latest_without_trailing_starvation(self):
+        self.send_first()
+        self.clock.advance(1)
+        before = len(self.starts)
+        self.handle.update((100, 200, 710, 610), 'normal', AREA)
+        self.assertAlmostEqual(self.pump(), .016)
+        self.assertEqual(len(self.starts), before)
+        self.clock.advance(.008)
+        self.handle.update((120, 220, 710, 610), 'normal', AREA)
+        self.assertAlmostEqual(self.pump(), .008)
+        self.clock.advance(.008001)
+        self.pump()
+        self.assertEqual(len(self.starts), before + 1)
+        self.assertEqual(self.clients[-1].calls[-1][1]['bounds'],
+                         dict(x=830, y=220, width=400, height=610))
+        # A pure move remains immediate once pacing permits.
+        self.clock.advance(1)
+        self.handle.update((130, 220, 710, 610), 'normal', AREA)
+        self.pump()
+        self.assertEqual(len(self.starts), before + 2)
+
+    def test_resize_batch_close_and_stop_cancel_admission(self):
+        for stop in (False, True):
+            if self.engine._stopped:
+                break
+            self.send_first()
+            self.clock.advance(1)
+            before = len(self.starts)
+            self.handle.update((100, 200, 710, 610), 'normal', AREA)
+            self.assertAlmostEqual(self.pump(), .016)
+            if stop:
+                self.engine.stop()
+            else:
+                self.handle.close()
+            self.clock.advance(1)
+            self.assertIsNone(self.pump())
+            self.assertEqual(len(self.starts), before)
+            if not stop:
+                self.handle = self.engine.attach('doc')
+                self.handle.update(RECT, 'normal', AREA)
+                self.handle.bind('A' * 22, 12345)
+
+    def test_pending_wait_is_bounded_and_idle_wait_is_indefinite(self):
+        delays = iter((.2, None))
+        waits = []
+        engine = self.engine
+        class Wake:
+            def clear(self): pass
+            def set(self): pass
+            def wait(self, delay):
+                waits.append(delay)
+                if len(waits) == 2:
+                    engine._stopped = True
+        engine._wake = Wake()
+        engine.run_once = lambda: next(delays)
+        engine._run()
+        self.assertEqual(waits, [.01, None])
+
+    def test_resize_batch_does_not_block_other_window_or_exceed_budget(self):
+        self.send_first()
+        other = self.engine.attach('other')
+        other.update(RECT, 'normal', AREA)
+        other.bind('B' * 22, 12345)
+        self.clock.advance(1)
+        self.pump()
+        self.clock.advance(1)
+        self.handle.update((100, 200, 710, 610), 'normal', AREA)
+        other.update((110, 200, 700, 600), 'normal', AREA)
+        self.pump()
+        self.assertEqual(self.clients[-1].calls[-1][1]['launch_id'], 'B' * 22)
+        for i in range(60):
+            self.handle.update((120+i, 220, 710+i, 610), 'normal', AREA)
+            for _ in range(100):
+                delay = self.pump()
+                if self.handle._sent is self.handle._latest:
+                    break
+                if delay:
+                    self.clock.advance(delay + .000001)
+            else:
+                self.fail('resize stream starved')
+        for start in self.starts:
+            self.assertLessEqual(sum(start <= t < start + 1 for t in self.starts), 10)
+        self.assertTrue(all(b-a >= .1 for a,b in zip(self.bounds_starts,self.bounds_starts[1:])))
+
     def test_terminal_snapshot_is_canceled_by_close_fence(self):
         self.send_first()
         before = list(self.clients[-1].calls)

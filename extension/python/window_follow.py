@@ -25,6 +25,7 @@ class FollowHandle:
         self._seq = 0
         self._busy = 0
         self._ready = 0.0
+        self._coalesce_until = 0.0
 
     @property
     def alive(self):
@@ -37,6 +38,17 @@ class FollowHandle:
         value = (None if rect is None else tuple(rect), state,
                  None if work_area is None else tuple(work_area))
         if value != self._latest:
+            previous = self._latest
+            if (previous is not None and previous is self._sent
+                    and state == previous[1] == 'normal'
+                    and value[0] is not None and previous[0] is not None
+                    and min(previous[0][2:]) >= 240
+                    and value[0][2:] != previous[0][2:]):
+                # macOS can emit the resized rectangle at the OLD position,
+                # then the correct move a few ms later. One fixed-size batch
+                # avoids spending a 100 ms admission on that intermediate value.
+                # Never extend this deadline during a continuous drag.
+                self._coalesce_until = self._owner._clock() + .016
             self._latest = value
             self._owner._wake.set()
 
@@ -48,6 +60,7 @@ class FollowHandle:
             self._binding = (launch_id, port, object())
             self._seq = self._busy = 0
             self._ready = 0.0
+            self._coalesce_until = 0.0
             self._sent = None
         self._owner._wake.set()
 
@@ -163,7 +176,7 @@ class Follower:
                 return None
             self._starts = [start for start in self._starts if now - start < 1.0]
             budget = self._starts[0] + 1.0 if len(self._starts) == 10 else now
-            eligible = [h for h in pending if h._ready <= now]
+            eligible = [h for h in pending if max(h._ready, h._coalesce_until) <= now]
             paired = (self._preferred is not None and self._hello_binding is not None
                       and self._preferred in eligible and self._client is not None
                       and self._preferred._binding is self._hello_binding
@@ -171,7 +184,7 @@ class Follower:
                       and self._calls == 0 and now - self._opened < 89.0)
             delay = max(0.0, (now if paired else self._next) - now, budget - now)
             if delay or not eligible:
-                return max(delay, min(h._ready for h in pending) - now, 0.0)
+                return max(delay, min(max(h._ready, h._coalesce_until) for h in pending) - now, 0.0)
             # Round-robin across windows, not a queue of geometry updates.
             ordered = handles[self._cursor:] + handles[:self._cursor]
             handle = (self._preferred if self._preferred is not None
@@ -251,4 +264,8 @@ class Follower:
             delay = self.run_once()
             if self._stopped:
                 break
-            self._wake.wait(delay)
+            # Bound timed sleeps while pending: macOS can heavily coalesce a
+            # background process's long timed wait. Recheck the SAME admission
+            # deadlines in short sleeps; idle still blocks indefinitely and no
+            # extra network request is admitted by these wakeups.
+            self._wake.wait(None if delay is None else min(delay, .01))
