@@ -179,12 +179,23 @@ class FollowTests(unittest.TestCase):
             self.handle.bind('A' * 22, 12345)
             self.pump()
             self.assertIsNone(self.handle._binding)
+            self.clock.advance(.100001)
         self.handle.bind('A' * 22, 12345)
-        self.assertEqual(self.pump(), 1)
-        self.assertEqual(len(self.starts), 10)
-        self.clock.advance(1)
         self.pump()
         self.assertEqual(len(self.starts), 11)
+        self.assertTrue(all(b-a >= .1 for a,b in zip(self.starts,self.starts[1:])))
+
+    def test_orphaned_hello_does_not_exempt_another_hello_from_spacing(self):
+        self.pump()
+        self.handle.close()
+        other = self.engine.attach('other')
+        other.update(RECT, 'normal', AREA)
+        other.bind('B' * 22, 12346)
+        self.assertGreater(self.pump(), 0)
+        self.assertEqual(len(self.starts), 1)
+        self.clock.advance()
+        self.pump()
+        self.assertGreaterEqual(self.starts[-1]-self.starts[0], .1)
 
     def test_one_handle_per_document_and_attach_after_close(self):
         self.assertIs(self.handle, self.engine.attach('doc'))

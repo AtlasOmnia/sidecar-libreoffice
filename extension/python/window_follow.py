@@ -110,6 +110,7 @@ class Follower:
         self._opened = 0.0
         self._cursor = 0
         self._preferred = None
+        self._hello_binding = None
         self._thread = None
         if autostart:
             self._thread = threading.Thread(target=self._run, name='sidecar-follow', daemon=True)
@@ -162,8 +163,13 @@ class Follower:
                 return None
             self._starts = [start for start in self._starts if now - start < 1.0]
             budget = self._starts[0] + 1.0 if len(self._starts) == 10 else now
-            delay = max(0.0, self._next - now, budget - now)
             eligible = [h for h in pending if h._ready <= now]
+            paired = (self._preferred is not None and self._hello_binding is not None
+                      and self._preferred in eligible and self._client is not None
+                      and self._preferred._binding is self._hello_binding
+                      and self._port == self._hello_binding[1]
+                      and self._calls == 0 and now - self._opened < 89.0)
+            delay = max(0.0, (now if paired else self._next) - now, budget - now)
             if delay or not eligible:
                 return max(delay, min(h._ready for h in pending) - now, 0.0)
             # Round-robin across windows, not a queue of geometry updates.
@@ -187,8 +193,8 @@ class Follower:
             # must not add 100 ms to its own first bounds. Count BOTH requests
             # in the process-wide rolling budget (also on failures/rebinds).
             self._starts.append(now)
+            self._next = now + 0.1
             if not hello:
-                self._next = now + 0.1
                 if handle._seq >= 2147483647:
                     handle._binding = None
                     return 0.0
@@ -226,6 +232,7 @@ class Follower:
                 # Complete a hello/bounds pair before switching endpoint. Without
                 # this, two ports could renew each other forever without sending.
                 self._preferred = handle
+                self._hello_binding = binding
             if outcome == 'busy':
                 handle._busy += 1
                 handle._ready = self._clock() + (0.25, 0.5, 1.0)[min(handle._busy - 1, 2)]
@@ -236,7 +243,7 @@ class Follower:
             elif outcome == 'ok':
                 handle._busy = 0
                 handle._sent = value
-        return max(0.0, self._next - self._clock())
+        return 0.0 if outcome == 'hello' else max(0.0, self._next - self._clock())
 
     def _run(self):
         while not self._stopped:

@@ -265,9 +265,11 @@ held by the worker during I/O; the worker never reads UNO. D2 measured a callbac
 11.4262 ms over 1,866 callbacks (NOT PASS); actual production callback wall time must be
 measured at p100 ≤5 ms over ≥1000 callbacks. A hand-off design is required, not a waiver.
 Send the first change immediately, then bounds starts at least 100 ms apart with a trailing
-latest value. **Cold-channel amendment (0.5.1 fix A):** a hello still waits for the previous
-bounds' 100 ms admission spacing, but the first bounds after that hello may start immediately
-after it completes. Every request start, including successful or failed hellos, counts toward
+latest value. **Cold-channel amendment (0.5.1 fix A):** all request admissions remain
+at least 100 ms apart except the first bounds on a successfully opened channel, for the
+same still-live binding. That bounds may start immediately after its hello completes.
+An orphaned or failed hello does not exempt a different hello or binding from spacing.
+Every request start, including successful or failed hellos, counts toward
 a process-wide maximum of ten starts in any rolling one-second interval. Budget exhaustion
 delays even that first bounds; neither rebind nor channel failure resets the budget. There is
 still only one request in flight and no idle prewarming. This replaces conservative spacing
