@@ -130,11 +130,13 @@ class LauncherClient:
         return resp
 
     def launch(self, document: dict, host_scheme: Optional[str] = "light", mode: str = "app",
-               bounds: Optional[dict] = None) -> Response:
+               bounds: Optional[dict] = None, follow: Optional[bool] = None) -> Response:
         if mode == "app" and bounds is None:
             bounds = {"x": 1240, "y": 102, "width": 400, "height": 848}
-        resp = self.call("POST", "/launcher/launch",
-                         {"document": document, "host_scheme": host_scheme, "mode": mode, "bounds": bounds})
+        payload = {"document": document, "host_scheme": host_scheme, "mode": mode, "bounds": bounds}
+        if follow is not None:
+            payload["follow"] = follow
+        resp = self.call("POST", "/launcher/launch", payload)
         data = resp.json()
         if resp.status == 201 and not contract.launch_url_re(self.port).fullmatch(data.get("url") or ""):
             raise NotYourHermes("launch url does not match the expected shape")

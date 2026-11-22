@@ -51,6 +51,17 @@ def valid_rectangle(rect: object) -> bool:
             and 240 <= rect["width"] <= 8192 and 240 <= rect["height"] <= 8192)
 
 
+WINDOW_STATES = ("normal", "minimized", "fullscreen", "hidden", "window_closed")
+
+
+def valid_snapshot(data: object) -> bool:
+    return (isinstance(data, dict) and set(data) == {"launch_id", "seq", "state", "bounds"}
+            and isinstance(data["launch_id"], str) and ID22_RE.fullmatch(data["launch_id"]) is not None
+            and is_int(data["seq"]) and 1 <= data["seq"] <= 2147483647
+            and data["state"] in WINDOW_STATES
+            and (valid_rectangle(data["bounds"]) if data["state"] == "normal" else data["bounds"] is None))
+
+
 # -- section 3: launcher channel (R18) ------------------------------------------------------
 def _hmac(key: bytes, *parts: str) -> bytes:
     return hmac.new(key, "\n".join(parts).encode("ascii"), hashlib.sha256).digest()

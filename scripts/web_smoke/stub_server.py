@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Atlas Omnia
-"""Verification stub of the 0.5.0 Sidecar window endpoint (docs/web-protocol.md, frozen C0).
+"""Verification stub of the 0.5.1 Sidecar window endpoint (protocol revision 5).
 
 It imitates the plugin for page and launcher work: every ``/launcher/*``, ``/ui/*`` and ``/api/*``
 route with the contract's gates, headers, error codes, sessions, launch codes, R18 channel and the
@@ -143,6 +143,10 @@ class Session:
     def __init__(self, digest: str, rec: "CodeRecord") -> None:
         self.digest = digest
         self.document, self.host_scheme, self.mode, self.bounds = rec.document, rec.host_scheme, rec.mode, rec.bounds
+        self.follow = rec.follow
+        self.launch_id = rec.launch_id
+        self.window = {"seq": 0, "state": "hidden", "bounds": None}
+        self.window_poller = None
         self.chat_id = "lo-" + secrets.token_hex(16)
         self.last_seen = time.monotonic()
         self.turn: Optional[Turn] = None
@@ -160,6 +164,7 @@ class CodeRecord:
     def __init__(self, launch_id: str, document: dict, host_scheme: Optional[str], mode: str, bounds: Any) -> None:
         self.launch_id, self.document, self.host_scheme, self.mode, self.bounds = launch_id, document, host_scheme, mode, bounds
         self.minted = time.monotonic()
+        self.follow = False
         self.used = False
         self.session_digest: Optional[str] = None
 
@@ -178,6 +183,7 @@ ROUTES = {
     "/launcher/hello": ("launcher", "POST", "launcher-hello"),
     "/launcher/launch": ("launcher", "POST", "launcher-launch"),
     "/launcher/release": ("launcher", "POST", "launcher-release"),
+    "/launcher/bounds": ("launcher", "POST", "launcher-bounds"),
     "/api/session": ("api", "POST", "api-session"),
     "/api/state": ("api", "GET", "api-state"),
     "/api/chat": ("api", "POST", "api-chat"),
@@ -190,13 +196,14 @@ BODY_KEYS = {
     "/launcher/hello": {"v", "client_nonce"},
     "/launcher/launch": {"document", "host_scheme", "mode", "bounds"},
     "/launcher/release": {"document_id", "reason"},
+    "/launcher/bounds": {"launch_id", "seq", "state", "bounds"},
     "/api/session": {"launch"},
     "/api/chat": {"message"},
     "/api/turn/stop": {"turn"},
     "/api/new-chat": set(),
     "/api/session/close": set(),
 }
-OPTIONAL_KEYS = {"/api/chat": {"send_id"}}   # contract revision 3, 6.3
+OPTIONAL_KEYS = {"/api/chat": {"send_id"}, "/launcher/launch": {"follow"}}   # contract revision 3, 6.3
 READ_ERRORS = {411: "length_required", 413: "too_large", 408: "body_timeout", 400: "bad_request"}
 
 
@@ -205,6 +212,8 @@ def classify(target: str) -> Optional[tuple[str, str, str, str]]:
     if target in ROUTES:
         family, method, label = ROUTES[target]
         return family, target, method, label
+    if target == "/api/window" or target.startswith("/api/window?"):
+        return "api", "/api/window", "GET", "api-window"
     if target == "/api/turn" or target.startswith("/api/turn?"):
         return "api", "/api/turn", "GET", "api-turn"
     if target.startswith("/launcher/launch/") and "?" not in target:   # a malformed id gets a signed 404
@@ -234,6 +243,8 @@ class Stub:
         self.sessions: dict[str, Session] = {}          # sha256(token) -> session
         self.ended: dict[str, tuple[str, float]] = {}   # sha256(token) -> (reason, when)
         self.parked = 0
+        self.window_waiters = {}
+        self.poll_only = False
         self.closing = False
         self.warnings: list[str] = []
         self._requested_port = port
@@ -361,6 +372,7 @@ class Stub:
             return []
         del self.sessions[session.digest]
         session.ended = reason
+        session.window = None
         self.ended[session.digest] = (reason, time.monotonic())
         while len(self.ended) > self.timing.ended_max:
             oldest = min(self.ended, key=lambda d: self.ended[d][1])
@@ -386,6 +398,11 @@ class Stub:
                 route = classify(target)
                 req.route_label = route[3] if route else "unknown"
                 raise WebError(403, "bad_host", "Host must be the loopback chat endpoint")
+            if self.closing:
+                raise WebError(503, "turned_off", "the plugin is unloading",
+                               ended="turned_off" if target.startswith("/api/") else "absent")
+            if not target.isascii() or any(ord(c) < 32 or ord(c) > 126 for c in target):
+                raise WebError(404, "not_found", "unknown route")
             route = classify(target)
             if route is None:
                 req.route_label = "unknown"
@@ -503,7 +520,8 @@ class Stub:
                                                self.timing.channel_ttl)
             self._json(req, 200, {"ok": True, "v": 1, "server_nonce": nonce,
                                   "server_proof": contract.server_proof(token, self.port, data["client_nonce"], nonce),
-                                  "expires_in": int(self.timing.channel_ttl), "chat": self.readiness()}, start)
+                                  "expires_in": int(self.timing.channel_ttl), "chat": self.readiness(),
+                                  "caps": ["window_follow"]}, start)
             return True
         channel, counter = self._channel(req, target, raw or b"")
 
@@ -528,11 +546,23 @@ class Stub:
             data = self._parse(raw or b"", name)
         except WebError as exc:
             return refuse(exc.status, exc.code, str(exc))
+        if name == "/launcher/bounds":
+            if not contract.valid_snapshot(data):
+                return refuse(400, "bad_request", "the bounds request is not valid")
+            with self.cv:
+                session = next((s for s in self.sessions.values() if s.launch_id == data["launch_id"]), None)
+                if session is None or not session.follow or data["seq"] <= session.window["seq"]:
+                    return refuse(409, "attachment_stale", "this window attachment is no longer current")
+                session.window = {k: data[k] for k in ("seq", "state", "bounds")}
+                self.cv.notify_all()
+            return answer(200, {"ok": True, "seq": data["seq"]})
         if name == "/launcher/launch":
             doc, scheme, mode, bounds = data["document"], data["host_scheme"], data["mode"], data["bounds"]
             if not (contract.valid_document(doc) and scheme in ("light", "dark", None) and mode in ("app", "tab")
                     and ((mode == "app" and contract.valid_rectangle(bounds)) or (mode == "tab" and bounds is None))):
                 return refuse(400, "bad_request", "the launch request is not valid")
+            if "follow" in data and (data["follow"] is not True or mode != "app"):
+                return refuse(400, "bad_request", "follow requires app mode and true")
             now = time.monotonic()
             with self.cv:
                 if self.closing:
@@ -540,9 +570,10 @@ class Stub:
                 for session in self.sessions.values():
                     if session.document["document_id"] == doc["document_id"] and (
                             now - session.last_seen <= self.timing.window_live
+                            or session.window_poller is not None
                             or (session.turn is not None and session.turn.inflight > 0)):
                         return answer(200, {"ok": True, "launch_id": None, "url": None, "window_live": True,
-                                            "expires_in": 0})
+                                            "expires_in": 0, "follow": False})
                 if sum(1 for r in self.codes.values() if not r.used) >= self.timing.max_codes:
                     return refuse(429, "too_many_launches", "too many launches are waiting; try again shortly")
                 if len(self.sessions) >= self.timing.max_sessions and not self._evictable_locked(doc["document_id"]):
@@ -550,10 +581,11 @@ class Stub:
                 code = contract.b64u(secrets.token_bytes(32))
                 launch_id = contract.b64u(secrets.token_bytes(16))
                 rec = CodeRecord(launch_id, doc, scheme, mode, bounds)
+                rec.follow = data.get("follow", False)
                 self.codes[hashlib.sha256(code.encode()).hexdigest()] = rec
                 self.launches[launch_id] = (rec, "pending")
             return answer(201, {"ok": True, "launch_id": launch_id, "url": f"{self.origin}/ui/index.html#launch={code}",
-                                "window_live": False, "expires_in": int(self.timing.code_ttl)})
+                                "window_live": False, "expires_in": int(self.timing.code_ttl), "follow": rec.follow})
         # /launcher/release
         document_id, reason = data["document_id"], data["reason"]
         if not ((reason == "document_closed" and isinstance(document_id, str) and 1 <= len(document_id) <= 512)
@@ -678,6 +710,8 @@ class Stub:
             self._json(req, 200, {"ok": True, "document": session.document, "chat": self.readiness(),
                                   "chat_label": session.chat_label, "turn": view}, start)
             return True
+        if name == "/api/window":
+            return self._window(req, session, target, start)
         if name == "/api/turn":
             return self._turn(req, session, target, start)
         data = self._parse(raw or b"", name)
@@ -762,7 +796,7 @@ class Stub:
             raise exc
         self._json(req, 200, {"ok": True, "session": token, "idle_timeout": int(self.timing.idle),
                               "document": session.document, "host_scheme": session.host_scheme,
-                              "mode": session.mode, "bounds": session.bounds, "chat": self.readiness(),
+                              "mode": session.mode, "bounds": session.bounds, "follow": session.follow, "chat": self.readiness(),
                               "chat_label": session.chat_label, "endpoint": self.origin,
                               "limits": {"max_message": self.cb.MAX_MESSAGE}}, start)
         return True
@@ -847,6 +881,58 @@ class Stub:
         self._json(req, 202, {"ok": True, "turn": view, "replayed": False}, start)
         return True
 
+    def _window(self, req: Any, session: Session, target: str, start: float) -> bool:
+        # Validate the raw query, not a decoded/normalized substitute.
+        query = target.partition("?")[2]
+        if not re.fullmatch(r"seq=(0|[1-9][0-9]{0,9})", query) or int(query[4:]) > 2147483647:
+            raise WebError(400, "bad_request", "the window query is not valid")
+        seq, me = int(query[4:]), object()
+        with self.cv:
+            if not session.follow:
+                raise WebError(404, "no_follow", "this session does not support following")
+            old = session.window_poller
+            if old in self.window_waiters:
+                del self.window_waiters[old]
+                self.parked -= 1
+            session.window_poller = me
+            self.cv.notify_all()
+            parked = False
+            retry = 100 if self.poll_only else 250
+            if not self.poll_only and session.window["seq"] <= seq and self.parked < 4:
+                self.window_waiters[me] = False
+                self.parked += 1
+                parked = True
+                retry = 0
+            deadline = time.monotonic() + self.timing.longpoll
+            try:
+                while True:
+                    if self.closing:
+                        raise WebError(503, "turned_off", "the plugin is unloading", ended="turned_off")
+                    if session.ended is not None:
+                        raise WebError(401, "no_session", "this window is no longer connected", ended=session.ended)
+                    superseded = session.window_poller is not me
+                    if superseded or session.window["seq"] > seq:
+                        retry = 0
+                        break
+                    if parked and me not in self.window_waiters:
+                        retry = 250
+                        break
+                    left = deadline - time.monotonic()
+                    if not parked or left <= 0:
+                        break
+                    self.cv.wait(left)
+                payload = {"ok": True, "superseded": superseded, "retry_ms": retry,
+                           "window": dict(session.window)}
+            finally:
+                if me in self.window_waiters:
+                    del self.window_waiters[me]
+                    self.parked -= 1
+                if session.window_poller is me:
+                    session.window_poller = None
+                self.cv.notify_all()
+        self._json(req, 200, payload, start)
+        return True
+
     def _turn(self, req: Any, session: Session, target: str, start: float) -> bool:
         query = urllib.parse.urlsplit(target).query
         pairs = urllib.parse.parse_qsl(query, keep_blank_values=True, strict_parsing=False)
@@ -868,6 +954,11 @@ class Stub:
                 self.cv.notify_all()          # the older long-poll sees it was superseded
             turn.poller = me
             turn.inflight += 1
+            if self.parked >= 4 and self.window_waiters:
+                victim = next(iter(self.window_waiters))
+                del self.window_waiters[victim]
+                self.parked -= 1
+                self.cv.notify_all()
             self.parked += 1
             deadline = time.monotonic() + self.timing.longpoll
             try:
