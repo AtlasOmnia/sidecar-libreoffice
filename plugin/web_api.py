@@ -47,6 +47,11 @@ from .chat_bridge import (MAX_ACTIVE, MAX_MESSAGE, MAX_REPLY, TURN_WORKER_FAILED
 log = logging.getLogger(__name__)
 
 LONG_POLL_SECONDS = 25.0
+WINDOW_POLL_ONLY = False       # transport fallback, independent of the page preference
+WINDOW_RETRY_MS = 250
+WINDOW_POLL_ONLY_RETRY_MS = 100
+MAX_WINDOW_SEQ = 2_147_483_647
+WINDOW_NUMBER_RE = re.compile(r"^(0|[1-9][0-9]{0,9})$")
 WINDOW_GONE_SECONDS = 90.0
 JANITOR_SECONDS = 1.0
 MAX_POST = 16 * 1024
@@ -114,6 +119,8 @@ ERRORS = {
     "plugin_inactive": (503, "the LibreOffice plugin is not active in Hermes: enable it and restart the gateway"),
     "worker_failed": (503, TURN_WORKER_FAILED),
     "message_invalid": (400, f"message must be 1 to {MAX_MESSAGE} characters"),
+    "attachment_stale": (409, "This window attachment is no longer current."),
+    "no_follow": (404, "This window was not launched with following."),
     "unknown_turn": (404, "This reply is not the window's current one."),
     "already_sent": (409, "This message was already sent to Hermes; it is not sent again."),
     "turn_running": (409, "Wait for the reply, or press Stop first."),
@@ -126,6 +133,8 @@ _BODY_ERRORS = {411: "length_required", 413: "too_large", 408: "body_timeout", 4
 _ROUTES = {
     "/launcher/hello": ("hello", "POST", "launcher-hello"),
     "/launcher/launch": ("launch", "POST", "launcher-launch"),
+    "/launcher/bounds": ("bounds", "POST", "launcher-bounds"),
+    "/api/window": ("window", "GET", "api-window"),
     "/launcher/release": ("release", "POST", "launcher-release"),
     "/api/session": ("session", "POST", "api-session"),
     "/api/state": ("state", "GET", "api-state"),
@@ -137,8 +146,9 @@ _ROUTES = {
 }
 _BODY_KEYS = {"hello": ("v", "client_nonce"), "launch": ("document", "host_scheme", "mode", "bounds"),
               "release": ("document_id", "reason"), "session": ("launch",), "chat": ("message",),
+              "bounds": ("launch_id", "seq", "state", "bounds"),
               "stop": ("turn",), "new_chat": (), "close": ()}
-_OPTIONAL_KEYS = {"chat": ("send_id",)}   # a body has all of them or none (6.3)
+_OPTIONAL_KEYS = {"chat": ("send_id",), "launch": ("follow",)}   # a body has all of them or none (6.3)
 _NO_SEND_ID = object()                    # /api/chat without a send_id (a rev-2 caller)
 
 
@@ -291,6 +301,7 @@ class WebApi:
         self._in_flight = 0
         self._requests: set = set()
         self._parked = 0
+        self._window_waiters: dict = {}   # token -> session; only slot owners, oldest first
         self._janitor: Optional[threading.Thread] = None
 
     # -- wiring --
@@ -404,7 +415,7 @@ class WebApi:
             # A malformed id is checked after the channel MAC, so its 404 is signed like an unknown id's.
             return "status", "GET", "launcher-status", route[len("/launcher/launch/"):]
         found = _ROUTES.get(route)
-        if found is None or (mark and found[0] != "turn"):
+        if found is None or (mark and found[0] not in ("turn", "window")):
             raise WebError("not_found")
         return found + ((query if mark else None),)
 
@@ -479,7 +490,8 @@ class WebApi:
             with self._cond:
                 server_nonce, proof = self.channels.open(token.encode("utf-8"), self.bridge.port, nonce)
             self._send(call, 200, {"ok": True, "v": 1, "server_nonce": server_nonce, "server_proof": proof,
-                                   "expires_in": int(auth.CHANNEL_SECONDS), "chat": self.readiness()})
+                                   "expires_in": int(auth.CHANNEL_SECONDS), "chat": self.readiness(),
+                                   "caps": ["window_follow"]})
             return
         headers = request.headers
         with self._cond:
@@ -496,6 +508,8 @@ class WebApi:
             if state is None:
                 raise WebError("not_found")
             self._send(call, 200, {"ok": True, "state": state})
+        elif name == "bounds":
+            self._bounds(call, self._shape(raw, "bounds"))
         elif name == "launch":
             self._launch(call, self._shape(raw, "launch"))
         else:
@@ -506,13 +520,17 @@ class WebApi:
         if (not auth.valid_document(document) or scheme not in ("light", "dark", None)
                 or not ((mode == "app" and auth.valid_rectangle(bounds)) or (mode == "tab" and bounds is None))):
             raise WebError("bad_request")
+        follow = body.get("follow", False)
+        if "follow" in body and (follow is not True or mode != "app"):
+            raise WebError("bad_request")
         document = {"document_id": document["document_id"], "title": document["title"], "type": document["type"]}
         bounds = None if bounds is None else {key: bounds[key] for key in ("x", "y", "width", "height")}
         with self._cond:
             now = self._clock()
             mine = self.sessions.for_document(document["document_id"])
             if any(session.parked or now - session.last_seen < auth.WINDOW_LIVE_SECONDS for session in mine):
-                answer = (200, {"ok": True, "launch_id": None, "url": None, "window_live": True, "expires_in": 0})
+                answer = (200, {"ok": True, "launch_id": None, "url": None, "window_live": True, "expires_in": 0,
+                                "follow": False})
             else:
                 if self.launches.outstanding() >= auth.MAX_CODES:
                     raise WebError("too_many_launches")
@@ -521,10 +539,10 @@ class WebApi:
                     if victim is None:
                         raise WebError("session_cap")
                     self._end_session(victim, "evicted")
-                code, launch = self.launches.mint(document, scheme, mode, bounds)
+                code, launch = self.launches.mint(document, scheme, mode, bounds, follow)
                 answer = (201, {"ok": True, "launch_id": launch.launch_id,
                                 "url": f"{self.origin}/ui/index.html#launch={code}", "window_live": False,
-                                "expires_in": int(auth.CODE_SECONDS)})
+                                "expires_in": int(auth.CODE_SECONDS), "follow": follow})
         self._send(call, *answer)
 
     def _release(self, call: _Call, body: dict) -> None:
@@ -539,13 +557,99 @@ class WebApi:
             self.launches.revoke_pending(document_id)
         self._send(call, 200, {"ok": True, "released": len(targets)})
 
+    def _bounds(self, call: _Call, body: dict) -> None:
+        launch_id, seq, state, bounds = (body[key] for key in ("launch_id", "seq", "state", "bounds"))
+        if (not isinstance(launch_id, str) or not auth.SHORT_ID_RE.fullmatch(launch_id)
+                or not auth._int(seq) or not 1 <= seq <= MAX_WINDOW_SEQ
+                or not isinstance(state, str)
+                or state not in ("normal", "minimized", "fullscreen", "hidden", "window_closed")
+                or not (auth.valid_rectangle(bounds) if state == "normal" else bounds is None)):
+            raise WebError("bad_request")
+        with self._cond:
+            if self._closing:
+                raise WebError("turned_off")
+            session = next((s for s in self.sessions.all() if s.launch_id == launch_id), None)
+            if session is None or not session.follow or session.window is None or seq <= session.window["seq"]:
+                raise WebError("attachment_stale")
+            session.window = {"seq": seq, "state": state, "bounds": None if bounds is None else dict(bounds)}
+            self._cond.notify_all()
+        self._send(call, 200, {"ok": True, "seq": seq})
+
+    def _unpark_window(self, token: Any) -> None:
+        """Release exactly one window slot, under _cond, including on preemption/supersession.
+
+        Removing it synchronously transfers the slot before a turn parks; the waking handler's
+        finally block cannot decrement it twice. A missing token means preempted, not reusable.
+        """
+        if token in self._window_waiters:
+            del self._window_waiters[token]
+            self._parked -= 1
+            self._cond.notify_all()
+
+    def _window_poll(self, call: _Call, session: auth.Session, query: str) -> None:
+        # Canonical wire form: exactly one decimal seq, no aliases, duplicates or extra keys.
+        if not query.startswith("seq=") or not WINDOW_NUMBER_RE.fullmatch(query[4:]):
+            raise WebError("bad_request")
+        seen = int(query[4:])
+        if seen > MAX_WINDOW_SEQ:
+            raise WebError("bad_request")
+        with self._cond:
+            if not session.follow:
+                raise WebError("no_follow")
+            session.window_gen += 1
+            generation = session.window_gen
+            self._unpark_window(session.window_waiter)
+            token = object()
+            session.window_waiter = token
+            session.parked += 1
+            deadline = time.monotonic() + self.long_poll_seconds
+            admitted = False
+            retry = 0
+            try:
+                while True:
+                    if self._closing:
+                        raise WebError("turned_off", ended="turned_off")
+                    if session.ended is not None:
+                        raise WebError("no_session", ended=session.ended)
+                    superseded = generation != session.window_gen
+                    left = deadline - time.monotonic()
+                    window = session.window
+                    assert window is not None   # live session, checked under this same lock
+                    if superseded or window["seq"] > seen or left <= 0:
+                        break
+                    if WINDOW_POLL_ONLY:
+                        retry = WINDOW_POLL_ONLY_RETRY_MS
+                        break
+                    if not admitted:
+                        if self._parked >= MAX_ACTIVE:
+                            retry = WINDOW_RETRY_MS
+                            break
+                        admitted = True
+                        self._window_waiters[token] = session
+                        self._parked += 1
+                    elif token not in self._window_waiters:
+                        retry = WINDOW_RETRY_MS
+                        break
+                    self._cond.wait(left)
+                payload = {"ok": True, "superseded": superseded, "retry_ms": retry,
+                           "window": session.window}
+            finally:
+                self._unpark_window(token)
+                if session.window_waiter is token:
+                    session.window_waiter = None
+                session.parked -= 1
+                session.last_seen = self._clock()
+        self._send(call, 200, payload)
+
     # -- page routes (6) --
     def _api(self, call: _Call, name: str, raw: Optional[bytes]) -> None:
         if name == "session":
             return self._exchange(call, self._shape(raw, "session"))
-        if name == "turn":
+        if name in ("turn", "window"):
             query = call.request.path.partition("?")[2]
             session = self._session(call)
+            if name == "window":
+                return self._window_poll(call, session, query)
             return self._long_poll(call, session, query)
         body = self._shape(raw, name) if raw is not None else None
         session = self._session(call)
@@ -609,7 +713,7 @@ class WebApi:
             launch.state, launch.session_digest = "exchanged", session.digest
             payload = {"ok": True, "session": token, "idle_timeout": int(auth.SESSION_IDLE_SECONDS),
                        "document": session.document, "host_scheme": session.host_scheme, "mode": session.mode,
-                       "bounds": session.bounds, "chat": readiness, "chat_label": _chat_label(session.chat_session_id),
+                       "bounds": session.bounds, "follow": session.follow, "chat": readiness, "chat_label": _chat_label(session.chat_session_id),
                        "endpoint": self.origin, "limits": {"max_message": MAX_MESSAGE}}
         self._send(call, 200, payload)
 
@@ -750,7 +854,10 @@ class WebApi:
                         payload = {"ok": True, "superseded": False, "turn": self._view(turn, have)}
                         break
                     if not parked:
-                        if self._parked >= MAX_ACTIVE:   # the connection budget (12): never more parked
+                        if self._parked >= MAX_ACTIVE and self._window_waiters:
+                            # Transfer ownership now, not when the window handler wakes.
+                            self._unpark_window(next(iter(self._window_waiters)))
+                        if self._parked >= MAX_ACTIVE:   # all slots already belong to turns
                             payload = {"ok": True, "superseded": False, "turn": self._view(turn, have)}
                             break
                         parked = True

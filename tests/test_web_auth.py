@@ -324,7 +324,7 @@ class LauncherChannelEndToEnd(WebCase):
         client = LauncherClient(self.port)
         status, value = client.hello()
         self.assertEqual(status, 200)
-        self.assertEqual(set(value), {"ok", "v", "server_nonce", "server_proof", "expires_in", "chat"})
+        self.assertEqual(set(value), {"ok", "v", "server_nonce", "server_proof", "expires_in", "chat", "caps"})
         self.assertEqual((value["v"], value["expires_in"], value["chat"]), (1, 120, {"ready": True, "reason": None}))
         status, answer, mac = client.call("GET", "/launcher/launch/" + "A" * 22)
         self.assertEqual((status, answer["code"]), (404, "not_found"))

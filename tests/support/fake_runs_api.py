@@ -332,14 +332,17 @@ class LauncherClient:
         return status, json.loads(raw), answer_mac
 
     def launch(self, document: Optional[dict] = None, mode: str = "app", host_scheme: Optional[str] = "light",
-               bounds: Any = "default") -> tuple:
+               bounds: Any = "default", follow: Any = None) -> tuple:
         if bounds == "default":
             bounds = {"x": 1240, "y": 102, "width": 400, "height": 848} if mode == "app" else None
         if self.channel is None:
             self.hello()
-        return self.call("POST", "/launcher/launch", {
+        body = {
             "document": document or {"document_id": "lo:5f0c:1", "title": "sales.ods", "type": "calc"},
-            "host_scheme": host_scheme, "mode": mode, "bounds": bounds})
+            "host_scheme": host_scheme, "mode": mode, "bounds": bounds}
+        if follow is not None:
+            body["follow"] = follow
+        return self.call("POST", "/launcher/launch", body)
 
 
 def code_of(url: str) -> str:
@@ -384,6 +387,9 @@ class PageClient:
 
     def turn(self, turn_id: str, seq: int = 0, have: int = 0, timeout: float = 30.0) -> tuple:
         return self.request("GET", f"/api/turn?id={turn_id}&seq={seq}&have={have}", timeout=timeout)
+
+    def window(self, seq: int = 0, timeout: float = 30.0) -> tuple:
+        return self.request("GET", f"/api/window?seq={seq}", timeout=timeout)
 
     def stop(self, turn_id: str) -> tuple:
         return self.request("POST", "/api/turn/stop", {"turn": turn_id})

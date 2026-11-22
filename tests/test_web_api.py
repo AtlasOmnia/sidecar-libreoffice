@@ -297,7 +297,7 @@ class LaunchLifecycleTests(WebCase):
         PageClient(self.port).exchange(code_of(value["url"]))
         status, live, _mac = launcher.launch({"document_id": "lo:5f0c:1", "title": "t.ods", "type": "calc"})
         self.assertEqual((status, live), (200, {"ok": True, "launch_id": None, "url": None, "window_live": True,
-                                                "expires_in": 0}))
+                                                "expires_in": 0, "follow": False}))
         self.clock.advance(web_auth.WINDOW_LIVE_SECONDS)
         self.assertEqual(launcher.launch({"document_id": "lo:5f0c:1", "title": "t.ods", "type": "calc"})[0], 201)
 

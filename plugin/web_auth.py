@@ -188,12 +188,13 @@ class Launch:
     """One minted launch. ``state``: pending, exchanged, expired or double_use."""
 
     __slots__ = ("launch_id", "code_digest", "minted", "document", "host_scheme", "mode", "bounds", "state",
-                 "session_digest")
+                 "session_digest", "follow")
 
     def __init__(self, launch_id: str, code_digest: bytes, minted: float, document: dict, host_scheme: Optional[str],
-                 mode: str, bounds: Optional[dict]) -> None:
+                 mode: str, bounds: Optional[dict], follow: bool = False) -> None:
         self.launch_id, self.code_digest, self.minted = launch_id, code_digest, minted
         self.document, self.host_scheme, self.mode, self.bounds = document, host_scheme, mode, bounds
+        self.follow = follow
         self.state = "pending"
         self.session_digest: Optional[bytes] = None
 
@@ -215,14 +216,15 @@ class Launches:
     def held_codes(self) -> int:
         return len(self._codes)
 
-    def mint(self, document: dict, host_scheme: Optional[str], mode: str, bounds: Optional[dict]) -> tuple[str, Launch]:
+    def mint(self, document: dict, host_scheme: Optional[str], mode: str, bounds: Optional[dict],
+             follow: bool = False) -> tuple[str, Launch]:
         """-> ``(code, launch)``; the caller checks ``outstanding() < MAX_CODES`` first."""
         self.expire()
         code = new_token()
         launch_id = new_short_id()
         while launch_id in self._launches:
             launch_id = new_short_id()
-        launch = Launch(launch_id, digest(code), self._clock(), document, host_scheme, mode, bounds)
+        launch = Launch(launch_id, digest(code), self._clock(), document, host_scheme, mode, bounds, follow)
         self._codes[launch.code_digest] = launch
         self._launches[launch_id] = launch
         return code, launch
@@ -276,7 +278,8 @@ class Session:
     """One Sidecar window's session. ``turn`` and the long-poll fields belong to web_api."""
 
     __slots__ = ("digest", "document", "host_scheme", "mode", "bounds", "chat_session_id", "created", "last_seen",
-                 "launch_id", "turn", "parked", "starting", "sent_ids", "ended")
+                 "launch_id", "turn", "parked", "starting", "sent_ids", "ended",
+                 "follow", "window", "window_gen", "window_waiter")
 
     def __init__(self, token_digest: bytes, launch: Launch, now: float) -> None:
         self.digest = token_digest
@@ -285,6 +288,10 @@ class Session:
         self.chat_session_id = new_chat_session_id()
         self.created = self.last_seen = now
         self.launch_id = launch.launch_id
+        self.follow = launch.follow
+        self.window: Optional[dict] = {"seq": 0, "state": "hidden", "bounds": None}
+        self.window_gen = 0
+        self.window_waiter: Any = None
         self.turn: Any = None
         self.parked = 0          # long-polls of this session in flight
         self.starting: Any = None   # the turn an /api/chat is admitting right now (web_api.Turn), else None
@@ -344,6 +351,7 @@ class Sessions:
             return False
         del self._live[session.digest]
         session.ended = reason
+        session.window = None
         self._ended[session.digest] = (reason, self._clock())
         self._ended.move_to_end(session.digest)
         while len(self._ended) > MAX_ENDED:
@@ -357,7 +365,7 @@ class Sessions:
 
     def idle(self) -> list:
         now = self._clock()
-        return [session for session in self._live.values() if session.last_seen + SESSION_IDLE_SECONDS <= now]
+        return [session for session in self._live.values() if not session.parked and session.last_seen + SESSION_IDLE_SECONDS <= now]
 
     def _forget_old(self) -> None:
         now = self._clock()
