@@ -12,11 +12,14 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+import os
 from typing import Any, Callable
 
 import uno
 import unohelper
-from com.sun.star.awt import XActionListener, XCallback, XWindowListener
+from com.sun.star.awt import XActionListener, XCallback, XWindowListener, XTopWindowListener
+from com.sun.star.frame import XFrameActionListener
+from com.sun.star.document import XDocumentEventListener
 from com.sun.star.ui import XSidebarPanel, XToolPanel, XUIElement, XUIElementFactory
 
 # LibreOffice loads this component by URI; make the sibling helpers importable (see hermes_bridge).
@@ -84,6 +87,153 @@ class _OnMainThread(unohelper.Base, XCallback):
         self._fn()
 
 
+# Document-owned, never panel-owned. All UNO calls here stay on the callback/main thread.
+_FOLLOW_LISTENERS: dict[str, Any] = {}
+
+
+class _FollowListener(unohelper.Base, XWindowListener, XTopWindowListener,
+                      XFrameActionListener, XDocumentEventListener):
+    """Copy only geometry/state into C2's nonblocking mailbox; no worker reads UNO."""
+
+    def __init__(self, document_id: str, frame: Any, handle: Any, work_area: Any,
+                 launcher: Any) -> None:
+        self.document_id, self.frame, self.handle = document_id, frame, handle
+        self.launcher, self.work_area = launcher, work_area
+        self.window = frame.getContainerWindow()
+        self.model = frame.getController().getModel()
+        self.hidden = False
+        self.closed = False
+        self._registered = []
+        try:
+            for owner, add, remove in (
+                (self.window, "addWindowListener", "removeWindowListener"),
+                (self.window, "addTopWindowListener", "removeTopWindowListener"),
+                (frame, "addFrameActionListener", "removeFrameActionListener"),
+                (self.model, "addDocumentEventListener", "removeDocumentEventListener"),
+            ):
+                getattr(owner, add)(self)
+                self._registered.append((owner, remove))
+            self._copy()
+        except Exception:
+            self.close()
+            raise
+
+    def _copy(self) -> None:
+        if self.closed:
+            return
+        if not self.handle.alive:
+            self.close()
+            return
+        try:
+            # Hidden is latched: move/resize/deactivate cannot reveal a hidden frame.
+            if self.hidden:
+                self.handle.update(None, "hidden", self.work_area)
+                return
+            if self.window.IsMinimized:
+                self.handle.update(None, "minimized", self.work_area)
+                return
+            area = self.window.getPosSize()
+            rect = (int(area.X), int(area.Y), int(area.Width), int(area.Height))
+            if rect[2] < 240 or rect[3] < 240:
+                self.handle.update(None, "hidden", self.work_area)
+                return
+            self.handle.update(rect, "normal", self.work_area)
+        except Exception:
+            # Disposed UNO objects are not normal/fallback geometry.
+            self.close()
+
+    def close(self, *, release: bool = False) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        self.handle.update(None, "window_closed", self.work_area)
+        self.handle.close()
+        if _FOLLOW_LISTENERS.get(self.document_id) is self:
+            del _FOLLOW_LISTENERS[self.document_id]
+        for owner, remove in self._registered:
+            try:
+                getattr(owner, remove)(self)
+            except Exception:
+                pass  # disposed owner: no listener can remain attached to a live window
+        self._registered.clear()
+        if release:
+            self.launcher.on_document_closed(self.document_id)
+
+    def windowMoved(self, _event: Any) -> None:
+        self._copy()
+
+    def windowResized(self, _event: Any) -> None:
+        self._copy()
+
+    def windowHidden(self, _event: Any) -> None:
+        self.hidden = True
+        self._copy()
+
+    def windowShown(self, _event: Any) -> None:
+        self.hidden = False
+        self._copy()
+
+    def windowMinimized(self, _event: Any) -> None:
+        if not self.closed and self.handle.alive:
+            self.handle.update(None, "minimized", self.work_area)
+
+    def windowNormalized(self, _event: Any) -> None:
+        self._copy()
+
+    def windowOpened(self, _event: Any) -> None:
+        self._copy()
+
+    def windowActivated(self, _event: Any) -> None:
+        self._copy()
+
+    def windowDeactivated(self, _event: Any) -> None:
+        return None
+
+    def windowClosing(self, _event: Any) -> None:
+        # Closing may be vetoed. Do not end the binding until the actual closed event.
+        return None
+
+    def windowClosed(self, _event: Any) -> None:
+        self.close(release=True)
+
+    def frameAction(self, event: Any) -> None:
+        action = getattr(event.Action, "value", event.Action)
+        if action == "COMPONENT_DETACHING":
+            self.close(release=True)
+
+    def documentEventOccured(self, event: Any) -> None:
+        if event.EventName == "OnUnload":
+            self.close(release=True)
+
+    def disposing(self, _event: Any) -> None:
+        self.close(release=True)
+
+
+def _attach_follow(document: Any, frame: Any, work_area: Any, launcher: Any) -> Any:
+    if (sys.platform != "darwin" or os.environ.get("HERMES_LO_SIDECAR_NO_FOLLOW") == "1"
+            or not isinstance(document, dict)):
+        return None
+    key = document["document_id"]
+    existing = _FOLLOW_LISTENERS.get(key)
+    if existing is not None and not existing.closed and existing.handle.alive:
+        # Another view of the same model must never take over the launching frame.
+        return existing.handle
+    if existing is not None:
+        existing.close()
+    factory = getattr(launcher, "follow_handle", None)
+    handle = factory(key) if factory else None
+    if handle is None or not handle.alive:
+        return None
+    try:
+        listener = _FollowListener(key, frame, handle, work_area, launcher)
+    except Exception:
+        handle.close()
+        return None
+    _FOLLOW_LISTENERS[key] = listener
+    launcher.register_follow_listener(key, listener.close)
+    return handle
+
+
 class LauncherPanel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XActionListener, XWindowListener):
     def __init__(self, ctx: Any, frame: Any, parent: Any, url: str, launcher: Any = None) -> None:
         self.ctx = ctx
@@ -149,8 +299,11 @@ class LauncherPanel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XActi
         if self._disposed or self._busy:
             return False
         self._action += 1
-        return bool(self._launcher.open(self._document(), self._host_scheme(), self._frame_rect(),
-                                        self._work_area(), self._reporter()))
+        document, work_area = self._document(), self._work_area()
+        handle = _attach_follow(document, self.Frame, work_area, self._launcher)
+        args = (document, self._host_scheme(), self._frame_rect(), work_area, self._reporter())
+        return bool(self._launcher.open(*args, follow=handle) if handle is not None else
+                    self._launcher.open(*args))
 
     def _document(self) -> Any:
         """Identity of the document this panel's window shows, as the bridge names it."""

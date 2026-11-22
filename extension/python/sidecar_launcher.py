@@ -271,6 +271,7 @@ class LauncherClient:
         self._channel = ""
         self._counter = 0
         self.chat: dict[str, Any] | None = None
+        self.caps: tuple[str, ...] = ()
 
     def _exchange(self, method: str, path: str, body: bytes | None,
                   headers: dict[str, str]) -> tuple[int, bytes, list[str]]:
@@ -338,6 +339,8 @@ class LauncherClient:
         self._channel = server_nonce
         self._counter = 0
         self.current = True
+        caps = value.get("caps")
+        self.caps = tuple(caps) if isinstance(caps, list) and all(isinstance(c, str) for c in caps) else ()
         chat = value.get("chat")
         self.chat = chat if isinstance(chat, dict) else None
         return self.chat or {}
@@ -371,9 +374,11 @@ class LauncherClient:
         return status, value
 
     def launch(self, document: dict[str, Any], host_scheme: str | None, mode: str,
-               bounds: dict[str, int] | None) -> dict[str, Any]:
-        status, value = self.call("POST", "/launcher/launch", {
-            "document": document, "host_scheme": host_scheme, "mode": mode, "bounds": bounds})
+               bounds: dict[str, int] | None, *, follow: bool = False) -> dict[str, Any]:
+        payload = {"document": document, "host_scheme": host_scheme, "mode": mode, "bounds": bounds}
+        if follow and mode == "app" and "window_follow" in self.caps:
+            payload["follow"] = True
+        status, value = self.call("POST", "/launcher/launch", payload)
         if status == 200 and value.get("ok") is True and value.get("window_live") is True:
             return {"window_live": True, "launch_id": None, "url": None}
         url, launch_id = value.get("url"), value.get("launch_id")
@@ -381,7 +386,8 @@ class LauncherClient:
             pattern = rf"^http://127\.0\.0\.1:{self.port}/ui/index\.html#launch=[A-Za-z0-9_-]{{43}}$"
             if (isinstance(url, str) and re.fullmatch(pattern, url) and isinstance(launch_id, str)
                     and _LAUNCH_ID.fullmatch(launch_id)):
-                return {"window_live": False, "launch_id": launch_id, "url": url}
+                return {"window_live": False, "launch_id": launch_id, "url": url,
+                        "follow": payload.get("follow") is True and value.get("follow") is True}
             raise LauncherError(NOT_YOURS.format(port=self.port))
         raise LauncherError(_refusal(value, status))
 
@@ -497,7 +503,8 @@ def compute_bounds(frame: tuple[int, int, int, int] | None,
     if frame is None or frame[2] <= 0 or frame[3] <= 0:
         frame = (ax, ay, max(aw - WINDOW_WIDTH, 0), ah)
     fx, fy, fw, fh = (int(v) for v in frame)
-    x = fx + fw if fx + fw + WINDOW_WIDTH <= ax + aw else ax + aw - WINDOW_WIDTH
+    centre_inside = ax <= fx + fw / 2 < ax + aw and ay <= fy + fh / 2 < ay + ah
+    x = fx + fw if fx + fw + WINDOW_WIDTH <= ax + aw or not centre_inside else ax + aw - WINDOW_WIDTH
     return {"x": _clamp(x, -32768, 32767), "y": _clamp(fy, -32768, 32767),
             "width": WINDOW_WIDTH, "height": _clamp(fh, 240, 8192)}
 
@@ -544,13 +551,14 @@ class _Cancelled(Exception):
 class _Launch:
     """One Open Sidecar click for one document, from the click until its worker ends."""
 
-    __slots__ = ("document_id", "cancelled", "spawning", "client")
+    __slots__ = ("document_id", "cancelled", "spawning", "client", "follow")
 
     def __init__(self, document_id: str) -> None:
         self.document_id = document_id
         self.cancelled = False   # set under the launcher lock by on_document_closed / on_terminate
         self.spawning = False    # the browser (or the default handler) is being started right now
         self.client: LauncherClient | None = None
+        self.follow: Any = None
 
 
 class Launcher:
@@ -583,6 +591,9 @@ class Launcher:
         self._browser_pid: int | None = None
         self._read_token: Callable[[], str] | None = None
         self._terminated = False
+        self._follower: Any = None
+        self._follow_handles: dict[str, Any] = {}
+        self._follow_listeners: dict[str, Callable[[], None]] = {}
 
     @property
     def adapter(self) -> Any:
@@ -594,6 +605,22 @@ class Launcher:
     def configure(self, read_token: Callable[[], str]) -> None:
         """Where the pairing token is read from (the bridge folder of this profile)."""
         self._read_token = read_token
+
+    def register_follow_listener(self, document_id: str, close: Callable[[], None]) -> None:
+        """UNO main thread only, like document-close and termination hooks."""
+        self._follow_listeners[document_id] = close
+
+    def follow_handle(self, document_id: str) -> Any:
+        """Main-thread click only. Windows and the support kill switch attach nothing."""
+        if self._platform != "darwin" or os.environ.get("HERMES_LO_SIDECAR_NO_FOLLOW") == "1" or self._terminated:
+            return None
+        if self._follower is None:
+            import window_follow
+            self._follower = window_follow.Follower()
+        handle = self._follow_handles.get(document_id)
+        if handle is None or not handle.alive:
+            handle = self._follow_handles[document_id] = self._follower.attach(document_id)
+        return handle
 
     def _new_client(self, timeout: float = CALL_TIMEOUT_SECONDS, deadline: float | None = None) -> LauncherClient:
         if self._read_token is None:
@@ -625,7 +652,7 @@ class Launcher:
 
     def open(self, document: dict[str, Any] | None, host_scheme: str | None,
              frame: tuple[int, int, int, int] | None, work_area: tuple[int, int, int, int] | None,
-             report: Callable[[str, bool], None]) -> bool:
+             report: Callable[[str, bool], None], *, follow: Any = None) -> bool:
         """The Open Sidecar button. Returns False when nothing was started (a launch for this
         document is already in progress, LibreOffice is quitting, or the document is not
         supported)."""
@@ -643,6 +670,8 @@ class Launcher:
             if self._terminated or (running is not None and not running.cancelled):
                 return False
             launch = self._launches[key] = _Launch(key)
+            if self._platform == "darwin" and os.environ.get("HERMES_LO_SIDECAR_NO_FOLLOW") != "1":
+                launch.follow = follow
         report(OPENING, True)
         doc = {"document_id": key, "title": str(document.get("title", ""))[:1000], "type": document["type"]}
 
@@ -697,7 +726,11 @@ class Launcher:
         browsers = list(adapter.find_browsers())
         mode = "app" if browsers else "tab"
         bounds = compute_bounds(frame, work_area) if mode == "app" else None
-        answer = client.launch(document, host_scheme, mode, bounds)
+        eligible = (launch.follow is not None and launch.follow.alive and mode == "app"
+                    and "window_follow" in getattr(client, "caps", ())
+                    and os.environ.get("HERMES_LO_SIDECAR_NO_FOLLOW") != "1")
+        answer = (client.launch(document, host_scheme, mode, bounds, follow=True) if eligible else
+                  client.launch(document, host_scheme, mode, bounds))
         if answer["window_live"]:
             self._check(launch)  # nothing minted; the close hook releases a window it opened
             pid = self._live_browser()
@@ -757,6 +790,10 @@ class Launcher:
             state = self._follow(launch, client, answer["launch_id"], written)
             if launch.cancelled:
                 self._abandon(client, launch, path)
+            if state == "exchanged" and eligible and answer.get("follow") is True:
+                # C2 bind rechecks alive; a concurrent close must not resurrect the binding.
+                self._check(launch)
+                launch.follow.bind(answer["launch_id"], client.port)
             if state == "pending":
                 keep = True  # still unexchanged after 20 s: report now, the cleanup removes it at 30 s
         finally:
@@ -817,6 +854,12 @@ class Launcher:
     def on_document_closed(self, document_id: str) -> None:
         """A document closed: cancel its launch in flight, and disconnect the window this
         LibreOffice opened for it (contract 4.3), on a worker, never blocking the close."""
+        detach = self._follow_listeners.pop(document_id, None)
+        if detach is not None:
+            detach()
+        handle = self._follow_handles.pop(document_id, None)
+        if handle is not None:
+            handle.close()
         with self._lock:
             if self._terminated:
                 return
@@ -859,6 +902,14 @@ class Launcher:
                     launch.client.deadline = http_end
             release = self._ever_opened or bool(self._launches)
             self._opened.clear()
+        for detach in list(self._follow_listeners.values()):
+            detach()
+        self._follow_listeners.clear()
+        if self._follower is not None:
+            self._follower.stop()
+        for handle in list(self._follow_handles.values()):
+            handle.close()
+        self._follow_handles.clear()
         adapter = self.adapter
         if adapter is None:
             return

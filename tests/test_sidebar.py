@@ -36,12 +36,16 @@ def load_sidebar():
     unohelper.ImplementationHelper = lambda: types.SimpleNamespace(addImplementation=lambda *args: None)
     awt = types.ModuleType("com.sun.star.awt")
     ui = types.ModuleType("com.sun.star.ui")
-    for module, names in ((awt, ("XActionListener", "XCallback", "XWindowListener")),
+    for module, names in ((awt, ("XActionListener", "XCallback", "XWindowListener", "XTopWindowListener")),
                           (ui, ("XSidebarPanel", "XToolPanel", "XUIElement", "XUIElementFactory"))):
         for name in names:
             setattr(module, name, type(name, (), {}))
     modules = {"uno": uno, "unohelper": unohelper, "com": types.ModuleType("com"), "com.sun": types.ModuleType("com.sun"),
                "com.sun.star": types.ModuleType("com.sun.star"), "com.sun.star.awt": awt, "com.sun.star.ui": ui}
+    for package, interface in (("frame", "XFrameActionListener"), ("document", "XDocumentEventListener")):
+        mod = types.ModuleType("com.sun.star." + package)
+        setattr(mod, interface, type(interface, (), {}))
+        modules[mod.__name__] = mod
     old = {name: sys.modules.get(name) for name in modules}
     sys.modules.update(modules)
     try:
@@ -406,6 +410,137 @@ class LauncherPanelTests(unittest.TestCase):
         for gone in ("/chat", "/health", "X-Hermes-Plugin-Key", "http.client", "Transcript", "write_theme",
                      "ThemeToggle", "XKeyListener"):
             self.assertNotIn(gone, source)
+
+
+class FollowHandle:
+    def __init__(self):
+        self.alive = True
+        self.values = []
+
+    def update(self, rect, state, area):
+        self.values.append((rect, state, area))
+
+    def close(self):
+        self.alive = False
+
+
+def measure_follow_callbacks(listener, count=1200):
+    """Joint C1/C2 harness half. Call on UNO main thread with the real C2 handle.
+
+    Includes the actual listener method, geometry/state reads and update hand-off.
+    Fake UNO use below checks instrumentation only, NOT native wall-cost acceptance.
+    V must additionally instrument real emitted callbacks during moves/resizes.
+    """
+    from time import perf_counter_ns
+    durations = []
+    for _ in range(count):
+        started = perf_counter_ns()
+        listener.windowMoved(None)
+        durations.append((perf_counter_ns() - started) / 1_000_000)
+    return durations
+
+
+class FollowListenerTests(unittest.TestCase):
+    def setUp(self):
+        from unittest.mock import Mock
+        self.window = Mock(IsMinimized=False)
+        self.window.getPosSize.return_value = Rect(X=100, Y=80, Width=1000, Height=700)
+        self.model = Mock()
+        self.frame = Mock()
+        self.frame.getContainerWindow.return_value = self.window
+        self.frame.getController.return_value.getModel.return_value = self.model
+        self.launcher = Mock()
+        self.handle = FollowHandle()
+        self.launcher.follow_handle.return_value = self.handle
+        self.area = (0, 0, 2560, 1080)
+        SIDEBAR._FOLLOW_LISTENERS.clear()
+        self.addCleanup(self.cleanup)
+
+    def cleanup(self):
+        for listener in list(SIDEBAR._FOLLOW_LISTENERS.values()):
+            listener.close()
+        SIDEBAR._FOLLOW_LISTENERS.clear()
+
+    def attach(self):
+        from unittest.mock import patch
+        with patch.object(SIDEBAR.sys, "platform", "darwin"):
+            result = SIDEBAR._attach_follow(DOCUMENT, self.frame, self.area, self.launcher)
+        self.assertIs(result, self.handle)
+        return SIDEBAR._FOLLOW_LISTENERS[DOCUMENT["document_id"]]
+
+    def test_hidden_latches_until_shown_and_minimized_has_no_geometry(self):
+        listener = self.attach()
+        self.assertEqual(self.handle.values[-1], ((100, 80, 1000, 700), "normal", self.area))
+        listener.windowHidden(None)
+        listener.windowMoved(None)
+        listener.windowResized(None)
+        self.assertEqual([v[1] for v in self.handle.values[-3:]], ["hidden"] * 3)
+        self.assertTrue(all(v[0] is None for v in self.handle.values[-3:]))
+        listener.windowShown(None)
+        self.assertEqual(self.handle.values[-1][1], "normal")
+        self.window.IsMinimized = True
+        listener.windowMoved(None)
+        self.assertEqual(self.handle.values[-1][:2], (None, "minimized"))
+        self.window.IsMinimized = False
+        self.window.getPosSize.return_value.Width = 239
+        listener.windowResized(None)
+        self.assertEqual(self.handle.values[-1][:2], (None, "hidden"))
+
+    def test_fullscreen_is_ordinary_large_window(self):
+        listener = self.attach()
+        self.window.FullScreen = True
+        self.window.getPosSize.return_value = Rect(X=0, Y=32, Width=2560, Height=1048)
+        listener.windowResized(None)
+        self.assertEqual(self.handle.values[-1][1], "normal")
+
+    def test_second_same_document_frame_cannot_take_over_and_panel_dispose_does_not_stop(self):
+        from unittest.mock import Mock, patch
+        listener = self.attach()
+        other = Mock()
+        with patch.object(SIDEBAR.sys, "platform", "darwin"):
+            self.assertIs(SIDEBAR._attach_follow(DOCUMENT, other, self.area, self.launcher), self.handle)
+        other.getContainerWindow.assert_not_called()
+        self.assertIs(listener.frame, self.frame)
+        self.launcher.register_follow_listener.assert_called_once_with(DOCUMENT["document_id"], listener.close)
+
+    def test_close_dispose_replacement_detach_every_owner_and_release_once(self):
+        for event in ("windowClosed", "disposing", "replacement", "unload"):
+            self.handle = FollowHandle()
+            self.launcher.follow_handle.return_value = self.handle
+            listener = self.attach()
+            if event == "replacement":
+                listener.frameAction(types.SimpleNamespace(Action=types.SimpleNamespace(value="COMPONENT_DETACHING")))
+            elif event == "unload":
+                listener.documentEventOccured(types.SimpleNamespace(EventName="OnUnload"))
+            else:
+                getattr(listener, event)(None)
+            count = len(self.handle.values)
+            listener.windowMoved(None)
+            listener.disposing(None)
+            self.assertEqual(len(self.handle.values), count)
+            self.assertFalse(self.handle.alive)
+            self.assertEqual(self.handle.values[-1][:2], (None, "window_closed"))
+            self.assertNotIn(DOCUMENT["document_id"], SIDEBAR._FOLLOW_LISTENERS)
+        self.assertEqual(self.launcher.on_document_closed.call_count, 4)
+        self.assertEqual(self.window.removeWindowListener.call_count, 4)
+        self.assertEqual(self.frame.removeFrameActionListener.call_count, 4)
+        self.assertEqual(self.model.removeDocumentEventListener.call_count, 4)
+
+    def test_windows_and_kill_switch_attach_nothing(self):
+        from unittest.mock import patch
+        for platform, env in (("win32", {}), ("darwin", {"HERMES_LO_SIDECAR_NO_FOLLOW": "1"})):
+            with patch.object(SIDEBAR.sys, "platform", platform), patch.dict(os.environ, env):
+                self.assertIsNone(SIDEBAR._attach_follow(DOCUMENT, self.frame, self.area, self.launcher))
+        self.launcher.follow_handle.assert_not_called()
+        self.window.addWindowListener.assert_not_called()
+
+    def test_callback_harness_covers_reads_and_handoff_not_a_native_acceptance_claim(self):
+        listener = self.attach()
+        durations = measure_follow_callbacks(listener)
+        self.assertEqual(len(durations), 1200)
+        self.assertEqual(len(self.handle.values), 1201)
+        self.assertEqual(self.window.getPosSize.call_count, 1201)
+        self.assertTrue(all(value >= 0 for value in durations))
 
 
 class Packaging(unittest.TestCase):

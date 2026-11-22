@@ -84,6 +84,8 @@ class FakePlugin:
         self.requests: list[dict] = []
         self.states: list[str] = ["exchanged"]
         self.window_live = False
+        self.caps = None
+        self.follow_echo = False
         self.hello_override = None
         self.launch_override = None
         self.forge_response_mac = False
@@ -158,7 +160,7 @@ class FakePlugin:
                                             hashlib.sha256).digest())
                     plugin.channels[sn] = {"key": key, "next": 1}
                     return self._answer(200, {"ok": True, "v": 1, "server_nonce": sn, "server_proof": proof,
-                                              "expires_in": 120, "chat": {"ready": True, "reason": None}})
+                                              "expires_in": 120, "chat": {"ready": True, "reason": None}, "caps": plugin.caps})
                 channel = plugin.channels.get(self.headers.get("X-Sidecar-Channel", ""))
                 n = self.headers.get("X-Sidecar-Counter", "")
                 if channel is None or n != str(channel["next"]):
@@ -180,7 +182,7 @@ class FakePlugin:
                     code = L.b64u(secrets.token_bytes(32))
                     url = f"http://127.0.0.1:{plugin.url_port or port}/ui/index.html#launch={code}"
                     return self._answer(201, {"ok": True, "launch_id": L.b64u(secrets.token_bytes(16)), "url": url,
-                                              "window_live": False, "expires_in": 30}, n, key)
+                                              "window_live": False, "expires_in": 30, "follow": plugin.follow_echo}, n, key)
                 if self.path.startswith("/launcher/launch/") and self.command == "GET":
                     state = plugin.states.pop(0) if len(plugin.states) > 1 else plugin.states[0]
                     return self._answer(200, {"ok": True, "state": state}, n, key)
@@ -746,6 +748,107 @@ class StateMachine(unittest.TestCase):
         launcher._opened.add("x")
         self.adapter.terminate = lambda pid: (_ for _ in ()).throw(RuntimeError("boom"))
         launcher.on_terminate()
+
+
+class FollowNegotiation(unittest.TestCase):
+    def setUp(self):
+        self.plugin = FakePlugin()
+        self.addCleanup(self.plugin.close)
+
+    def test_capability_shapes_and_signed_echo(self):
+        for caps in (None, "window_follow", ["window_follow", 1], [], ["unknown"], ["window_follow"]):
+            self.plugin.caps = caps
+            self.plugin.follow_echo = True
+            client = L.LauncherClient(self.plugin.port, lambda: TOKEN)
+            client.hello()
+            answer = client.launch(DOCUMENT, None, "app", None, follow=True)
+            payload = json.loads(self.plugin.requests[-1]["body"])
+            eligible = caps == ["window_follow"]
+            self.assertEqual(payload.get("follow"), True if eligible else None)
+            self.assertIs(answer["follow"], eligible)
+        self.plugin.caps = ["window_follow"]
+        self.plugin.follow_echo = False
+        client = L.LauncherClient(self.plugin.port, lambda: TOKEN)
+        client.hello()
+        self.assertFalse(client.launch(DOCUMENT, None, "app", None, follow=True)["follow"])
+        self.plugin.forge_response_mac = True
+        with self.assertRaises(L.LauncherError):
+            client.launch(DOCUMENT, None, "app", None, follow=True)
+
+    def test_tab_never_sends_follow_even_when_requested(self):
+        self.plugin.caps = ["window_follow"]
+        client = L.LauncherClient(self.plugin.port, lambda: TOKEN)
+        client.hello()
+        self.assertFalse(client.launch(DOCUMENT, None, "tab", None, follow=True)["follow"])
+        self.assertNotIn("follow", json.loads(self.plugin.requests[-1]["body"]))
+
+    def test_authenticated_newline_url_and_id_are_refused(self):
+        client = L.LauncherClient(self.plugin.port, lambda: TOKEN)
+        client.hello()
+        url = f"http://127.0.0.1:{self.plugin.port}/ui/index.html#launch=" + "A" * 43
+        for field in ("url", "launch_id"):
+            value = {"ok": True, "window_live": False, "url": url, "launch_id": "A" * 22}
+            value[field] += "\n"
+            self.plugin.launch_override = (201, value)
+            with self.assertRaises(L.LauncherError):
+                client.launch(DOCUMENT, None, "tab", None)
+
+
+class FollowWiring(unittest.TestCase):
+    setUp = StateMachine.setUp
+    launcher = StateMachine.launcher
+    report = StateMachine.report
+    def handle(self):
+        from unittest.mock import Mock
+        return Mock(alive=True)
+
+    def test_bind_only_after_signed_echo_and_exchange(self):
+        for state, echo in (("expired", True), ("exchanged", False), ("exchanged", True)):
+            launcher = self.launcher({"states": [state]})
+            handle = self.handle()
+            self.client.caps = ["window_follow"]
+            original = self.client.launch
+            def launch(*args, **kw):
+                self.assertEqual(kw, {"follow": True})
+                self.assertFalse(handle.bind.called)
+                return dict(original(*args), follow=echo)
+            self.client.launch = launch
+            launcher.open(DOCUMENT, None, None, None, self.report, follow=handle)
+            if state == "exchanged" and echo:
+                handle.bind.assert_called_once_with("B" * 22, self.client.port)
+            else:
+                handle.bind.assert_not_called()
+
+    def test_windows_and_kill_switch_never_negotiate_or_attach(self):
+        from unittest.mock import patch
+        for platform, env in (("win32", {}), ("darwin", {"HERMES_LO_SIDECAR_NO_FOLLOW": "1"})):
+            with patch.dict(os.environ, env):
+                launcher = self.launcher(platform=platform)
+                if platform == "win32":
+                    self.adapter.browsers = []
+                self.client.caps = ["window_follow"]
+                handle = self.handle()
+                self.assertIsNone(launcher.follow_handle(DOCUMENT["document_id"]))
+                launcher.open(DOCUMENT, None, None, None, self.report, follow=handle)
+                handle.bind.assert_not_called()
+
+    def test_close_and_quit_stop_handles_and_main_thread_listeners(self):
+        launcher = self.launcher()
+        handle = self.handle()
+        launcher._follow_handles[DOCUMENT["document_id"]] = handle
+        detached = []
+        launcher.register_follow_listener(DOCUMENT["document_id"], lambda: detached.append(True))
+        launcher.on_document_closed(DOCUMENT["document_id"])
+        handle.close.assert_called_once()
+        self.assertEqual(detached, [True])
+        follower = self.handle()
+        launcher._follower = follower
+        launcher.on_terminate()
+        follower.stop.assert_called_once()
+
+    def test_follow_bounds_keep_another_display_coordinates(self):
+        self.assertEqual(L.compute_bounds((2600, 100, 800, 600), (0, 0, 2560, 1080))["x"], 3400)
+        self.assertEqual(L.compute_bounds((-1000, 100, 800, 600), (0, 0, 2560, 1080))["x"], -200)
 
 
 class BusyAnswers(unittest.TestCase):
