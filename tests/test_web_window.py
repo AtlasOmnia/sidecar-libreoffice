@@ -75,7 +75,7 @@ class WindowCase(WebCase):
 class WindowBoundaryTests(WindowCase):
     def test_capability_and_old_shaped_launch_are_independent_of_page_preference(self):
         status, hello = self.launcher().hello()
-        self.assertEqual((status, hello["caps"]), (200, ["window_follow"]))
+        self.assertEqual((status, hello["caps"]), (200, ["window_follow", "attachment_release"]))
         launcher, launch_id, page = self.attachment(follow=False)
         self.assertEqual(page.window()[0:2], (404, {"ok": False,
                          "error": web_api.ERRORS["no_follow"][1], "code": "no_follow"}))

@@ -251,6 +251,13 @@ class Launches:
             del self._codes[key]
         return len(gone)
 
+    def revoke_attachment(self, launch_id: str) -> None:
+        """Revoke only this attachment's pending code, atomically with exchange at caller."""
+        launch = self.get(launch_id)
+        if launch is not None and launch.state == "pending":
+            launch.state = "expired"
+            self._codes.pop(launch.code_digest, None)
+
     def expire(self) -> None:
         now = self._clock()
         for key in [key for key, launch in self._codes.items() if launch.minted + CODE_SECONDS <= now]:

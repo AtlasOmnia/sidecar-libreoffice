@@ -53,6 +53,13 @@ settle 400 ms **and completed read-back**, undock >8 points, rectangle floor 240
 Fullscreen is treated as an ordinary large window: no reliable pure-UNO signal qualified
 both native modes. Default-on promotion needs passing retests and explicit owner approval.
 
+**Revision 5.1 (B1 corrective amendment, 0.5.1)** adds the `attachment_release`
+hello capability and optional `launch_id` for document-close releases. The launcher retains
+signed mint ids with their generations (including unexchanged codes); all retries capture
+the same id. Release and exchange share the server lock. Late old releases cannot end a
+replacement attachment or revoke its pending code. Legacy pairs retain document-wide,
+best-effort close with no replacement-isolation guarantee; host quit is unchanged.
+
 Labels such as R18, D1 or S1 are the requirement, owner-decision and spike numbers of the 0.5.0
 design review; the spike results that fixed a detail are quoted where they apply.
 
@@ -195,11 +202,17 @@ answers 200:
  "chat": {"ready": true, "reason": null}}
 ```
 
-The 200 answer may carry `"caps": [<strings>]`; 0.5.1 sends `["window_follow"]`.
-This is an unsigned hint only, permitting an eligible macOS app launcher to send the optional
-`follow` key (4.1). Unknown entries, a missing field or a wrong type mean no capabilities.
-Only the signed launch echo authorizes following. Old launchers ignore extra answer fields;
-a new launcher with an old plugin sends no new key and behaves exactly as 0.5.0.
+The 200 answer may carry `"caps": [<strings>]`; revision 5.1 sends
+`["window_follow", "attachment_release"]`. These are unsigned hints only: `window_follow`
+permits an eligible macOS app launcher to send optional `follow` (4.1), while
+`attachment_release` permits optional `launch_id` on `document_closed` (4.3), on every OS
+and in app or tab mode. Ignore unknown entries; missing/non-list fields or any non-string
+entry mean no capabilities. Only the signed launch echo authorizes following; only an
+authenticated release acts. Hints are not downgrade-proof availability guarantees.
+Old launchers ignore extra answer fields. Against 0.5.0 or revision-5 plugins without
+`attachment_release`, new launchers send the legacy release shape with no extra key.
+If a mint negotiated scoped release but a retry's fresh hello lacks the capability, stop
+without sending: never downgrade that captured scoped operation to document-wide.
 
 The launcher recomputes `server_proof` and compares in constant time. A mismatch, a missing
 field, or any status other than 200 means the program on that port is not this user's Hermes:
@@ -328,6 +341,18 @@ request 4: POST /launcher/bounds, counter 4, body
   request MAC   zekmULHpr-_hN52XDlsmycbEFggZ24vGwBNHTRKBHv8
 ```
 
+Revision-5.1 additional vector (same key, no trailing newline):
+
+```
+request 5: POST /launcher/release, counter 5, body
+  {"document_id":"lo:5f0c:1","reason":"document_closed","launch_id":"AAAAAAAAAAAAAAAAAAAAAA"}
+  SHA256(body)  edd5b96cc51ddc55fa3b250d2fa4441236bc6dd896b07bde176445c24ff11fce
+  request MAC   XG6rpjVqIsPE0sseVFTmdhIcIcGyaHl5VKAgzYdlfqA
+response to request 5: status 200, body {"ok":true,"released":1}
+  SHA256(body)  686fc326f0646e1df50bbc2a23b6ff53a6f7b348b05b9dbf32dff6d8805adf75
+  response MAC  dKnjQxvRpzu_tdrhnZeMYctHUyDxU84_X3ycxwaRNIU
+```
+
 ## 4. Launcher routes
 
 ### 4.1 `POST /launcher/launch`
@@ -386,9 +411,28 @@ quit any `launch-*.html` older than 60 s (revision 3).
 
 ### 4.3 `POST /launcher/release`
 
-Body `{"document_id": "<id>", "reason": "document_closed"}` or
-`{"document_id": null, "reason": "host_quit"}` (all documents). Ends every matching session with
-reason `host_gone`, asks their driven runs to stop, answers 200 `{"ok": true, "released": <n>}`.
+Revision 5.1 scoped body (exactly these three keys):
+`{"document_id": "<id>", "reason": "document_closed", "launch_id": "<22>"}`.
+Send only when the mint's hello and this release's hello advertise `attachment_release`.
+The id must be a full section-2 launch id; null, wrong type/shape, wrong document association,
+extra keys, or `launch_id` with `host_quit` are signed 400 `bad_request` after authentication.
+Under the same lock as exchange, end only the live session with that launch id (reason
+`host_gone`, ask only its driven run to stop), and revoke only that launch's pending code.
+Check document association against retained launch records and live sessions independently:
+a session can outlive its 120 s launch record. Unknown/already-ended ids are idempotent
+200 no-ops, never a lookup of the document's current session. Answer signed 200
+`{"ok": true, "released": <number of sessions ended>}`; revoking a pending code counts zero.
+No route enumerates ids or returns them to pages.
+
+Legacy body `{"document_id": "<id>", "reason": "document_closed"}` remains accepted for
+old launchers and new launchers paired with old/no-capability plugins. It ends every current
+session and revokes all pending codes for that document: **best effort only, not attachment
+safe**. An already transmitted legacy release can end a reopened document's replacement;
+a local generation check or client timeout does not cancel server execution. This compatibility
+fallback retains the old retry policy, explicitly without the new non-interference guarantee.
+
+`{"document_id": null, "reason": "host_quit"}` is unchanged: all documents' sessions and
+pending codes, with no launch id permitted. It is intentionally host-wide, not scoped.
 
 **Cancel on close and quit (revision 3).** Closing a document, or quitting LibreOffice, cancels
 that document's launch in flight: no browser is started after it; a code the plugin already
@@ -398,9 +442,19 @@ the browser was already being started, quit waits for it (bounded) and asks it t
 close quits it when no other document has a window. `host_quit` is sent when a window was
 opened or a launch is in flight.
 
-A `document_closed` release with no answer or a busy refusal is retried on a new channel
-0.5 s, 1.5 s and 3.5 s after close. Never after quit begins or after any signed answer;
-never affect a reopened document. The wire format is unchanged.
+A `document_closed` release with no answer or unsigned busy is retried on fresh channels
+at absolute offsets 0.5 s, 1.5 s and 3.5 s after close (initial attempt at 0), at most four
+attempts per attachment. Hello and release share each attempt's whole-call deadline,
+min(0.5 s, remaining four-second close budget); do not admit another attempt at/after 4 s.
+Never after quit begins or any signed answer, including refusal. No main-thread join or
+I/O-gate wait is added at close/quit. Each scoped retry uses the **same captured launch_id**,
+never the newest attachment for that document. Scoped old-attachment cleanup may continue
+after reopen, safely; legacy retries cancel locally when the generation changes, but already
+sent legacy handlers remain unsafe. Retain every signed mint with its launch/opened-document
+generation, even pending/not yet exchanged, until close/quit. Claim its close worker once,
+including when close races mint, exchange, browser spawn or outcome polling. A cancelled mint
+that returns late releases its own captured id and must not overwrite replacement bookkeeping.
+Delivery remains best effort if all attempts fail; no general 90 s session expiry is promised.
 
 ### 4.4 `POST /launcher/bounds`
 
@@ -1073,7 +1127,7 @@ So the programs the extension starts are: the browser in app mode (macOS), `/usr
 file association names (normally the default browser). None goes through a shell.
 
 `sidecar_launcher.py` owns: `LauncherClient(port, read_token)` with `hello()`, `launch(document,
-host_scheme, mode, bounds)`, `status(launch_id)`, `release(document_id, reason)` (section 3 and
+host_scheme, mode, bounds)`, `status(launch_id)`, `release(document_id, reason, *, launch_id=None)` (section 3 and
 4); `write_bootstrap(url) -> Path` and the sweep (section 5); `compute_bounds(frame, work_area)`
 (8.3); `browser_argv(executable, profile_dir, target_uri, position, size, platform)` with the
 frozen flag list. `hermes_bridge.py` calls `sidecar_launcher.on_document_closed(document_id)`

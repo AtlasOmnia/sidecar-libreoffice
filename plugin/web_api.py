@@ -148,7 +148,7 @@ _BODY_KEYS = {"hello": ("v", "client_nonce"), "launch": ("document", "host_schem
               "release": ("document_id", "reason"), "session": ("launch",), "chat": ("message",),
               "bounds": ("launch_id", "seq", "state", "bounds"),
               "stop": ("turn",), "new_chat": (), "close": ()}
-_OPTIONAL_KEYS = {"chat": ("send_id",), "launch": ("follow",)}   # a body has all of them or none (6.3)
+_OPTIONAL_KEYS = {"chat": ("send_id",), "launch": ("follow",), "release": ("launch_id",)}   # a body has all of them or none (6.3)
 _NO_SEND_ID = object()                    # /api/chat without a send_id (a rev-2 caller)
 
 
@@ -491,7 +491,7 @@ class WebApi:
                 server_nonce, proof = self.channels.open(token.encode("utf-8"), self.bridge.port, nonce)
             self._send(call, 200, {"ok": True, "v": 1, "server_nonce": server_nonce, "server_proof": proof,
                                    "expires_in": int(auth.CHANNEL_SECONDS), "chat": self.readiness(),
-                                   "caps": ["window_follow"]})
+                                   "caps": ["window_follow", "attachment_release"]})
             return
         headers = request.headers
         with self._cond:
@@ -550,11 +550,27 @@ class WebApi:
         if not ((reason == "document_closed" and isinstance(document_id, str) and 0 < len(document_id) <= 512)
                 or (reason == "host_quit" and document_id is None)):
             raise WebError("bad_request")
+        scoped = "launch_id" in body
+        launch_id = body.get("launch_id")
+        if scoped and (reason != "document_closed" or not isinstance(launch_id, str)
+                       or not auth.SHORT_ID_RE.fullmatch(launch_id)):
+            raise WebError("bad_request")
         with self._cond:
             targets = self.sessions.for_document(document_id) if document_id is not None else self.sessions.all()
+            if scoped:
+                # Records expire before sessions do. Check both under the exchange lock;
+                # never resolve a late release through the document's current attachment.
+                launch = self.launches.get(launch_id)
+                attached = [s for s in self.sessions.all() if s.launch_id == launch_id]
+                if ((launch is not None and launch.document["document_id"] != document_id)
+                        or any(s.document["document_id"] != document_id for s in attached)):
+                    raise WebError("bad_request")
+                targets = attached
+                self.launches.revoke_attachment(launch_id)
+            else:
+                self.launches.revoke_pending(document_id)
             for session in targets:
                 self._end_session(session, "host_gone")
-            self.launches.revoke_pending(document_id)
         self._send(call, 200, {"ok": True, "released": len(targets)})
 
     def _bounds(self, call: _Call, body: dict) -> None:

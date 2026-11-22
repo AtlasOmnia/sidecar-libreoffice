@@ -398,9 +398,16 @@ class LauncherClient:
             return state
         return "expired"
 
-    def release(self, document_id: str | None, reason: str) -> int:
-        status, value = self.call("POST", "/launcher/release",
-                                  {"document_id": document_id, "reason": reason})
+    def release(self, document_id: str | None, reason: str, *, launch_id: str | None = None) -> int:
+        payload = {"document_id": document_id, "reason": reason}
+        if launch_id is not None:
+            # Never silently downgrade a captured scoped release to document-wide.
+            if reason != "document_closed" or "attachment_release" not in self.caps:
+                raise LauncherError("Attachment-scoped release is unavailable.")
+            if not isinstance(launch_id, str) or not _LAUNCH_ID.fullmatch(launch_id):
+                raise LauncherError("Invalid attachment release.")
+            payload["launch_id"] = launch_id
+        status, value = self.call("POST", "/launcher/release", payload)
         released = value.get("released")
         return released if status == 200 and isinstance(released, int) else 0
 
@@ -551,7 +558,7 @@ class _Cancelled(Exception):
 class _Launch:
     """One Open Sidecar click for one document, from the click until its worker ends."""
 
-    __slots__ = ("document_id", "cancelled", "spawning", "client", "follow", "generation", "closed_at")
+    __slots__ = ("document_id", "cancelled", "spawning", "client", "follow", "generation", "closed_at", "launch_id", "scoped_release", "release_started")
 
     def __init__(self, document_id: str) -> None:
         self.document_id = document_id
@@ -561,6 +568,9 @@ class _Launch:
         self.follow: Any = None
         self.generation = 0
         self.closed_at: float | None = None
+        self.launch_id: str | None = None
+        self.scoped_release = False
+        self.release_started = False
 
 
 class Launcher:
@@ -597,8 +607,10 @@ class Launcher:
         self._follow_handles: dict[str, Any] = {}
         self._follow_listeners: dict[str, Callable[[], None]] = {}
         self._generations: dict[str, int] = {}
+        self._attachments: dict[str, list[_Launch]] = {}  # every signed mint, including pending
         # Worker-only I/O gates: never acquired from a UNO callback. A reopened document
-        # mints only after any older release in flight has completed.
+        # mints only after the older client call returns, NOT after server execution.
+        # Attachment scope is the remote lifetime fence; this gate is just local ordering.
         self._release_gates: dict[str, Any] = {}
 
     @property
@@ -723,8 +735,16 @@ class Launcher:
             if terminated:
                 client.release(None, "host_quit")
             else:
-                self._release_closed(launch.document_id, launch.generation,
-                                     launch.closed_at if launch.closed_at is not None else self._clock())
+                with self._lock:
+                    release = not launch.release_started
+                    launch.release_started = True
+                if release:
+                    args = (launch.document_id, launch.generation,
+                            launch.closed_at if launch.closed_at is not None else self._clock())
+                    if launch.scoped_release:
+                        self._release_closed(*args, launch.launch_id, True)
+                    else:
+                        self._release_closed(*args)
         except Exception:
             pass
         raise _Cancelled()
@@ -744,6 +764,14 @@ class Launcher:
                         and os.environ.get("HERMES_LO_SIDECAR_NO_FOLLOW") != "1")
             answer = (client.launch(document, host_scheme, mode, bounds, follow=True) if eligible else
                       client.launch(document, host_scheme, mode, bounds))
+            if not answer["window_live"]:
+                with self._lock:
+                    launch.launch_id = answer["launch_id"]
+                    launch.scoped_release = "attachment_release" in getattr(client, "caps", ())
+                    # A cancelled mint belongs to its old generation; never publish it
+                    # over a replacement. _abandon releases its captured id instead.
+                    if not launch.cancelled:
+                        self._attachments.setdefault(launch.document_id, []).append(launch)
         if answer["window_live"]:
             self._check(launch)  # nothing minted; the close hook releases a window it opened
             pid = self._live_browser()
@@ -880,20 +908,33 @@ class Launcher:
             if launch is not None:
                 launch.cancelled = True
                 launch.closed_at = self._clock()
-            if document_id not in self._opened:
-                return
+            attachments = self._attachments.pop(document_id, [])
+            if document_id not in self._opened and not attachments:
+                return  # an in-flight mint will capture its signed id and abandon itself
             self._opened.discard(document_id)
             generation = self._generations.get(document_id, 0)
             closed_at = self._clock()
+            releases = []
+            for attachment in attachments:
+                if not attachment.release_started:
+                    attachment.release_started = True
+                    releases.append((attachment.launch_id, attachment.scoped_release))
+            if not attachments:
+                releases.append((None, False))  # legacy bookkeeping without a retained id
 
-        self._start(lambda: self._release_closed(document_id, generation, closed_at), "SidecarRelease")
+        for launch_id, scoped in releases:
+            self._start(lambda lid=launch_id, scope=scoped:
+                        self._release_closed(document_id, generation, closed_at, lid, scope),
+                        "SidecarRelease")
 
-    def _release_closed(self, document_id: str, generation: int, closed_at: float) -> None:
+    def _release_closed(self, document_id: str, generation: int, closed_at: float,
+                        launch_id: str | None = None, scoped: bool = False) -> None:
         """E03: initial close plus three new-channel attempts, within four seconds.
 
         A signed release answer (including refusal) is final. Only no-answer/unsigned busy
-        permits retry. The worker-only gate orders an in-flight release before a reopened
-        document's mint; generations cancel every stale retry, including abandoned launches.
+        permits retry. Every attempt carries the same captured launch id. Scoped releases
+        can clean an old attachment after reopen; the server, not the local I/O gate,
+        fences replacement lifetimes. Legacy document-wide releases remain best effort.
         """
         with self._lock:
             gate = self._release_gates.setdefault(document_id, threading.Lock())
@@ -903,7 +944,7 @@ class Launcher:
                 self._sleep(remaining)
             with gate:
                 with self._lock:
-                    if self._terminated or self._generations.get(document_id, 0) != generation:
+                    if self._terminated or (not scoped and self._generations.get(document_id, 0) != generation):
                         return
                 left = closed_at + 4.0 - self._clock()
                 if left <= 0:
@@ -913,9 +954,14 @@ class Launcher:
                     client = self._new_client(timeout=0.5, deadline=deadline)
                     self._hello(client)
                     with self._lock:
-                        if self._terminated or self._generations.get(document_id, 0) != generation:
+                        if self._terminated or (not scoped and self._generations.get(document_id, 0) != generation):
                             return
-                    client.release(document_id, "document_closed")
+                    if scoped:
+                        if "attachment_release" not in getattr(client, "caps", ()):
+                            return  # plugin changed: no unsafe document-wide fallback
+                        client.release(document_id, "document_closed", launch_id=launch_id)
+                    else:
+                        client.release(document_id, "document_closed")
                     return  # every authenticated answer is final, whatever its status
                 except LauncherBusy:
                     continue
@@ -948,6 +994,7 @@ class Launcher:
                     launch.client.deadline = http_end
             release = self._ever_opened or bool(self._launches)
             self._opened.clear()
+            self._attachments.clear()
         for detach in list(self._follow_listeners.values()):
             detach()
         self._follow_listeners.clear()

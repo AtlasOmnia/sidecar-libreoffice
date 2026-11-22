@@ -1,6 +1,6 @@
 # 0.5.1 draft release and evidence ledger
 
-**Status: Unreleased; not a publication receipt.** This ledger separates the accepted candidate contract, historical observations and candidate gates. The README commands target the prospective v0.5.1 tag and must not be used until publication. Both README hashes now name the deterministic candidate archive: `0e23e3571b5b77bbb953e6d8c27a206e1ff48fee2cf686653674cd53529b5d02`. Matching build checks do not imply native acceptance or release approval.
+**Status: Unreleased; not a publication receipt.** This ledger separates the accepted candidate contract, historical observations and candidate gates. The README commands target the prospective v0.5.1 tag and must not be used until publication. Both README hashes now name the deterministic candidate archive: `6f08a2719e67164e5d5b4a8a5a6c940fddf5fa6a2e45f4e9e6a0cb209290fd51`. Matching build checks do not imply native acceptance or release approval.
 
 ## Historical evidence — do not promote to 0.5.1
 

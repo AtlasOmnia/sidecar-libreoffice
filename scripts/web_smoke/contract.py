@@ -101,6 +101,12 @@ VECTORS = {
     "response1_mac": "ZgH8usVq9byBTZB7tp2Fi7PfEpJk8YBIw-EfdEN6FRc",
     "request2_path": "/launcher/launch/AAAAAAAAAAAAAAAAAAAAAA",
     "request2_mac": "pz9hSDdfVxWMTMKc772QPcntSZE8IV0T3jHUv836CuI",
+    "request5_body": '{"document_id":"lo:5f0c:1","reason":"document_closed","launch_id":"AAAAAAAAAAAAAAAAAAAAAA"}',
+    "request5_body_sha256": "edd5b96cc51ddc55fa3b250d2fa4441236bc6dd896b07bde176445c24ff11fce",
+    "request5_mac": "XG6rpjVqIsPE0sseVFTmdhIcIcGyaHl5VKAgzYdlfqA",
+    "response5_body": '{"ok":true,"released":1}',
+    "response5_body_sha256": "686fc326f0646e1df50bbc2a23b6ff53a6f7b348b05b9dbf32dff6d8805adf75",
+    "response5_mac": "dKnjQxvRpzu_tdrhnZeMYctHUyDxU84_X3ycxwaRNIU",
 }
 
 
@@ -127,6 +133,14 @@ def check_vectors() -> list[str]:
         bad.append("request2_mac")
     if b64u_decode(v["client_nonce"]) != bytes(range(32)) or b64u_decode(v["server_nonce"]) != bytes(range(32, 64)):
         bad.append("nonce_bytes")
+    if hashlib.sha256(v["request5_body"].encode()).hexdigest() != v["request5_body_sha256"]:
+        bad.append("request5_body_sha256")
+    if request_mac(key, "POST", "/launcher/release", 5, v["request5_body"].encode()) != v["request5_mac"]:
+        bad.append("request5_mac")
+    if hashlib.sha256(v["response5_body"].encode()).hexdigest() != v["response5_body_sha256"]:
+        bad.append("response5_body_sha256")
+    if response_mac(key, 5, 200, v["response5_body"].encode()) != v["response5_mac"]:
+        bad.append("response5_mac")
     return bad
 
 

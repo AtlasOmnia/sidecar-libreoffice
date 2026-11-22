@@ -12,7 +12,7 @@ All notable changes to Sidecar for LibreOffice are documented here. The format f
 - Capability negotiation and signed bounds transport, bound to the launching document window, with a shared four-slot reply/window-poll pool and priority for reply polls. The extension’s follow worker coalesces changes, sends at most ten bounds updates per second and renews its own channel. Support can disable it with `HERMES_LO_SIDECAR_NO_FOLLOW=1`.
 
 ### Fixed (candidate scope; acceptance pending)
-- Retry unanswered/busy document-close releases at 0.5, 1.5 and 3.5 seconds, stopping after any signed answer or quit. This is bounded recovery, not guaranteed delivery.
+- Retry unanswered/busy document-close releases at 0.5, 1.5 and 3.5 seconds, stopping after any signed answer or quit. Negotiated attachment-scoped releases capture the signed launch id, so delayed old closes cannot end a replacement session/turn or revoke its pending code. Old launchers or plugins without `attachment_release` retain document-wide best-effort behavior, including the risk that a delayed close affects a reopened document. Recovery is bounded, not guaranteed delivery.
 - Distinguish an unsafe cache folder from a browser-launch failure without bypassing private-file checks.
 - Reject trailing newlines and other partial matches in launcher URLs, nonces and bootstrap inputs; reap exited browser hand-off children.
 - Ignore an obsolete state-poll failure after a successful Try again, so it cannot restore a misleading unreachable banner during the reply.

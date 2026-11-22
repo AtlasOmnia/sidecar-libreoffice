@@ -601,6 +601,34 @@ def _(c: Ctx) -> None:
         c.expect(f"release {name}", client.release(payload["document_id"], payload["reason"]), 400, "bad_request")
 
 
+@probe("g1.release.attachment", "G1", "Scoped release revokes only its code/session; old shape remains supported")
+def _(c: Ctx) -> None:
+    client = c.launcher()
+    first_id, _, first_code = c.launch(1)
+    second_id, _, second_code = c.launch(1)
+    body = {"document_id": doc(1)["document_id"], "reason": "document_closed", "launch_id": first_id}
+    response = client.call("POST", "/launcher/release", body)
+    c.expect("scoped pending release", response, 200)
+    c.check("pending release ends zero sessions", response.json().get("released") == 0, 0, response.json().get("released"))
+    c.expect("only old code revoked", c.exchange(first_code), 401, "launch_expired")
+    exchanged = c.exchange(second_code)
+    c.expect("replacement pending code remains exchangeable", exchanged, 200)
+    token = exchanged.json()["session"]
+    c.secrets.add(token)
+    c.expect("late old attachment is idempotent", client.call("POST", "/launcher/release", body), 200)
+    c.expect("replacement still usable", c.get("/api/state", token), 200)
+    for bad in (None, False, "short", "A" * 22 + "\n"):
+        c.expect("invalid scoped id refused", client.call("POST", "/launcher/release", dict(body, launch_id=bad)), 400, "bad_request")
+    body["launch_id"] = second_id
+    c.expect("wrong document association", client.call("POST", "/launcher/release", dict(body, document_id="wrong")), 400, "bad_request")
+    c.expect("host quit cannot carry id", client.call("POST", "/launcher/release", dict(body, document_id=None, reason="host_quit")), 400, "bad_request")
+    c.expect("scoped live release", client.call("POST", "/launcher/release", body), 200)
+    c.expect("its own session ended", c.get("/api/state", token), 401, "no_session")
+    third_id, _, third_code = c.launch(1)
+    c.expect("old launcher legacy body", client.release(doc(1)["document_id"], "document_closed"), 200)
+    c.expect("legacy pending revocation", c.exchange(third_code), 401, "launch_expired")
+
+
 @probe("g1.code.single_use", "G1", "A code is single use; a second presentation revokes its session, stops its run, sets double_use")
 def _(c: Ctx) -> None:
     client = c.launcher()

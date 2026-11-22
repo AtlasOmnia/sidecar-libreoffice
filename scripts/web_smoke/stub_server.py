@@ -203,7 +203,7 @@ BODY_KEYS = {
     "/api/new-chat": set(),
     "/api/session/close": set(),
 }
-OPTIONAL_KEYS = {"/api/chat": {"send_id"}, "/launcher/launch": {"follow"}}   # contract revision 3, 6.3
+OPTIONAL_KEYS = {"/launcher/release": {"launch_id"}, "/api/chat": {"send_id"}, "/launcher/launch": {"follow"}}   # contract revision 3, 6.3
 READ_ERRORS = {411: "length_required", 413: "too_large", 408: "body_timeout", 400: "bad_request"}
 
 
@@ -521,7 +521,7 @@ class Stub:
             self._json(req, 200, {"ok": True, "v": 1, "server_nonce": nonce,
                                   "server_proof": contract.server_proof(token, self.port, data["client_nonce"], nonce),
                                   "expires_in": int(self.timing.channel_ttl), "chat": self.readiness(),
-                                  "caps": ["window_follow"]}, start)
+                                  "caps": ["window_follow", "attachment_release"]}, start)
             return True
         channel, counter = self._channel(req, target, raw or b"")
 
@@ -591,10 +591,27 @@ class Stub:
         if not ((reason == "document_closed" and isinstance(document_id, str) and 1 <= len(document_id) <= 512)
                 or (reason == "host_quit" and document_id is None)):
             return refuse(400, "bad_request", "the release request is not valid")
+        scoped = "launch_id" in data
+        launch_id = data.get("launch_id")
+        if scoped and (reason != "document_closed" or not isinstance(launch_id, str)
+                       or not contract.ID22_RE.fullmatch(launch_id)):
+            return refuse(400, "bad_request", "the release request is not valid")
         stops = []
         with self.cv:
             matching = [s for s in self.sessions.values()
                         if document_id is None or s.document["document_id"] == document_id]
+            if scoped:
+                record = self.launches.get(launch_id)
+                attached = [s for s in self.sessions.values() if s.launch_id == launch_id]
+                if ((record is not None and record[0].document["document_id"] != document_id)
+                        or any(s.document["document_id"] != document_id for s in attached)):
+                    return refuse(400, "bad_request", "the attachment belongs to another document")
+                matching = attached
+            for key, record in list(self.codes.items()):
+                if (not record.used and (record.launch_id == launch_id if scoped else
+                        document_id is None or record.document["document_id"] == document_id)):
+                    self.codes.pop(key)
+                    self.launches[record.launch_id] = (record, "expired")
             for session in matching:
                 stops.extend(self._end_locked(session, "host_gone"))
         for run in stops:
