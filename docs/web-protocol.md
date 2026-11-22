@@ -264,7 +264,14 @@ and wakes the worker, dropping unchanged values. No network, file or logging wor
 held by the worker during I/O; the worker never reads UNO. D2 measured a callback maximum
 11.4262 ms over 1,866 callbacks (NOT PASS); actual production callback wall time must be
 measured at p100 ≤5 ms over ≥1000 callbacks. A hand-off design is required, not a waiver.
-Send the first change immediately, then at least 100 ms apart with a trailing latest value.
+Send the first change immediately, then bounds starts at least 100 ms apart with a trailing
+latest value. **Cold-channel amendment (0.5.1 fix A):** a hello still waits for the previous
+bounds' 100 ms admission spacing, but the first bounds after that hello may start immediately
+after it completes. Every request start, including successful or failed hellos, counts toward
+a process-wide maximum of ten starts in any rolling one-second interval. Budget exhaustion
+delays even that first bounds; neither rebind nor channel failure resets the budget. There is
+still only one request in flight and no idle prewarming. This replaces conservative spacing
+of every hello/bounds pair, not the total request budget, channel proofs or lifetime fences.
 Use an independent channel (not click/release/quit), opening a new hello before 48 calls or
 90 s; every whole call has a 1 s deadline. No in-place retry. Every failure drops the channel.
 Refused connection, signed 409 or failed proof unbinds that window until next Open Sidecar.

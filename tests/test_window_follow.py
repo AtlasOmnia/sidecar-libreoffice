@@ -84,6 +84,7 @@ class FollowTests(unittest.TestCase):
         self.clock = Clock()
         self.clients = []
         self.starts = []
+        self.bounds_starts = []
 
         def factory(port, read_token, **kwargs):
             client = Client(port, read_token, **kwargs)
@@ -94,6 +95,7 @@ class FollowTests(unittest.TestCase):
                 return original_hello()
             def call(*args):
                 self.starts.append(self.clock())
+                self.bounds_starts.append(self.clock())
                 return original_call(*args)
             client.hello, client.call = hello, call
             return client
@@ -127,17 +129,62 @@ class FollowTests(unittest.TestCase):
         self.assertFalse(self.handle.alive)
         self.assertIsNone(self.handle._binding)
 
-    def test_cold_hello_first_bounds_respects_total_request_budget(self):
+    def test_cold_and_renewed_hello_allow_immediate_first_bounds(self):
+        for renewed in (False, True):
+            if renewed:
+                self.clock.advance(100)
+                self.change(301)
+            self.assertEqual(self.pump(), 0)
+            before = self.clock()
+            self.pump()
+            self.assertEqual(self.starts[-2:], [before, before])
+            self.assertEqual(self.clients[-1].calls[-1][0], '/launcher/bounds')
+
+    def test_hello_exemption_preserves_bounds_spacing_and_rolling_budget(self):
+        # Repeated endpoint changes require a hello/bounds pair each time.
+        # Both admissions count, including failed hellos, in a rolling second.
+        for i in range(30):
+            self.handle.bind('A' * 22, 12345 + i)
+            self.change(100 + i)
+            for _ in range(100):
+                delay = self.pump()
+                if self.handle._sent is self.handle._latest:
+                    break
+                if delay:
+                    self.clock.advance(delay + .000001)
+            else:
+                self.fail('pending latest value did not progress')
+        self.assertEqual(len(self.starts), 60)
+        for start in self.starts:
+            self.assertLessEqual(sum(start <= t < start + 1 for t in self.starts), 10)
+        bounds_starts = self.starts[1::2]
+        self.assertTrue(all(b-a >= .1 for a,b in zip(bounds_starts,bounds_starts[1:])))
+
+    def test_last_budget_slot_hello_does_not_exempt_bounds_from_budget(self):
+        self.engine._starts = [self.clock() - .5] * 9
+        self.pump()  # hello takes the tenth slot
+        self.assertAlmostEqual(self.pump(), .5)
+        self.assertEqual(len(self.starts), 1)
+        self.handle.close()
+        self.clock.advance(1)
+        self.assertIsNone(self.pump())  # close still cancels budget-delayed bounds
+        self.assertEqual(len(self.starts), 1)
+
+    def test_failed_hellos_count_toward_process_budget_across_rebinds(self):
+        def failed_hello():
+            self.starts.append(self.clock())
+            raise ConnectionRefusedError()
+        self.engine._factory = lambda *args, **kwargs: mock.Mock(hello=failed_hello)
+        for _ in range(10):
+            self.handle.bind('A' * 22, 12345)
+            self.pump()
+            self.assertIsNone(self.handle._binding)
+        self.handle.bind('A' * 22, 12345)
+        self.assertEqual(self.pump(), 1)
+        self.assertEqual(len(self.starts), 10)
+        self.clock.advance(1)
         self.pump()
-        self.clock.advance(.099)
-        self.pump()
-        self.assertEqual(self.starts, [100.0])
-        self.clock.advance(.001001)
-        self.pump()
-        self.assertEqual(len(self.starts), 2)
-        self.assertGreaterEqual(self.starts[1] - self.starts[0], .1)
-        self.assertLess(self.starts[1] - self.starts[0], .15)
-        self.assertEqual(self.clients[-1].calls[-1][0], '/launcher/bounds')
+        self.assertEqual(len(self.starts), 11)
 
     def test_one_handle_per_document_and_attach_after_close(self):
         self.assertIs(self.handle, self.engine.attach('doc'))
@@ -155,12 +202,14 @@ class FollowTests(unittest.TestCase):
         self.assertEqual(self.send_first()['seq'], 1)
 
     def test_immediate_global_spacing_trailing_and_unchanged(self):
-        self.assertAlmostEqual(self.pump(), .1)
+        self.assertEqual(self.pump(), 0)
         self.assertEqual(self.starts, [100.0])
         self.change(200)
         self.change(300)
-        self.assertGreater(self.pump(), 0)
-        self.assertEqual(len(self.starts), 1)
+        self.pump()
+        self.assertEqual(len(self.starts), 2)
+        self.assertIsNone(self.pump())
+        self.assertEqual(len(self.starts), 2)
         self.clock.advance()
         self.pump()
         body = self.clients[-1].calls[-1][1]
@@ -173,7 +222,7 @@ class FollowTests(unittest.TestCase):
         self.change(400)
         self.pump()
         self.assertEqual(self.clients[-1].calls[-1][1]['seq'], 2)
-        self.assertTrue(all(b - a >= .1 for a, b in zip(self.starts, self.starts[1:])))
+        self.assertTrue(all(b - a >= .1 for a, b in zip(self.bounds_starts, self.bounds_starts[1:])))
 
     def test_multiple_windows_share_pacing_and_progress(self):
         second = self.engine.attach('other')
@@ -184,7 +233,7 @@ class FollowTests(unittest.TestCase):
             self.clock.advance()
         payloads = [p for c in self.clients for route, p in c.calls if p]
         self.assertEqual({p['launch_id'] for p in payloads}, {'A' * 22, 'B' * 22})
-        self.assertTrue(all(b - a >= .1 for a, b in zip(self.starts, self.starts[1:])))
+        self.assertTrue(all(b - a >= .1 for a, b in zip(self.bounds_starts, self.bounds_starts[1:])))
 
     def test_renew_before_48_calls(self):
         self.send_first()
@@ -366,7 +415,7 @@ class FollowTests(unittest.TestCase):
             self.clock.advance()
         payloads = [p for c in self.clients for route, p in c.calls if p]
         self.assertEqual({p['launch_id'] for p in payloads}, {'A' * 22, 'B' * 22})
-        self.assertTrue(all(b - a >= .1 for a, b in zip(self.starts, self.starts[1:])))
+        self.assertTrue(all(b - a >= .1 for a, b in zip(self.bounds_starts, self.bounds_starts[1:])))
 
     def test_hello_failure_and_busy_are_fenced(self):
         self.engine._factory = lambda *args, **kwargs: mock.Mock(

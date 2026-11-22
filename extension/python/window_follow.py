@@ -87,7 +87,8 @@ class Follower:
 
     client_factory has LauncherClient's (port, read_token, timeout=...) shape.
     clock/autostart are deterministic-test seams; run_once admits at most one
-    request. All HTTP starts, including renewal hellos, share 100 ms pacing.
+    request. Bounds starts share 100 ms pacing; the first bounds after hello
+    need not wait for hello's spacing. All starts share a rolling 10/second cap.
     Each new binding restarts its wire sequence; rebind generations fence old
     completions. Failed calls never reuse a channel or retry a wire sequence.
     """
@@ -102,6 +103,7 @@ class Follower:
         self._wake = threading.Event()
         self._stopped = False
         self._next = 0.0
+        self._starts = []  # At most ten admissions, including failed hellos.
         self._client = None
         self._port = None
         self._calls = 0
@@ -158,7 +160,9 @@ class Follower:
                        and h._latest is not None and h._latest is not h._sent]
             if not pending:
                 return None
-            delay = max(0.0, self._next - now)
+            self._starts = [start for start in self._starts if now - start < 1.0]
+            budget = self._starts[0] + 1.0 if len(self._starts) == 10 else now
+            delay = max(0.0, self._next - now, budget - now)
             eligible = [h for h in pending if h._ready <= now]
             if delay or not eligible:
                 return max(delay, min(h._ready for h in pending) - now, 0.0)
@@ -179,8 +183,12 @@ class Follower:
                      or self._calls >= 47 or now - self._opened >= 89.0)
             # Admission linearizes under the close/stop gate, but I/O never
             # holds it. close/stop cancel all *subsequent* admissions.
-            self._next = now + 0.1
+            # A hello must still wait for the previous bounds admission, but
+            # must not add 100 ms to its own first bounds. Count BOTH requests
+            # in the process-wide rolling budget (also on failures/rebinds).
+            self._starts.append(now)
             if not hello:
+                self._next = now + 0.1
                 if handle._seq >= 2147483647:
                     handle._binding = None
                     return 0.0
