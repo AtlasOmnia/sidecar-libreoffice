@@ -346,7 +346,7 @@ class BootstrapFile(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(path.parent.parent.stat().st_mode), 0o700)
 
     def test_refuses_unexpected_url_characters(self):
-        for bad in (URL + '"><script>', URL.replace("http", "https"), "file:///etc/passwd", URL + " x"):
+        for bad in (URL + '"><script>', URL.replace("http", "https"), "file:///etc/passwd", URL + " x", URL + "\n"):
             with self.assertRaises(ValueError):
                 L.write_bootstrap(bad, self.cache)
 

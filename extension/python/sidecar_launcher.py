@@ -329,7 +329,7 @@ class LauncherClient:
         server_nonce = value.get("server_nonce")
         proof = value.get("server_proof")
         if (status != 200 or value.get("ok") is not True or value.get("v") != 1
-                or not isinstance(server_nonce, str) or not _NONCE.match(server_nonce)
+                or not isinstance(server_nonce, str) or not _NONCE.fullmatch(server_nonce)
                 or not isinstance(proof, str)
                 or not hmac.compare_digest(proof, hello_proof(token, self.port, client_nonce, server_nonce))):
             raise LauncherError(NOT_YOURS.format(port=self.port))
@@ -378,8 +378,8 @@ class LauncherClient:
         url, launch_id = value.get("url"), value.get("launch_id")
         if status == 201 and value.get("ok") is True and value.get("window_live") is False:
             pattern = rf"^http://127\.0\.0\.1:{self.port}/ui/index\.html#launch=[A-Za-z0-9_-]{{43}}$"
-            if (isinstance(url, str) and re.match(pattern, url) and isinstance(launch_id, str)
-                    and _LAUNCH_ID.match(launch_id)):
+            if (isinstance(url, str) and re.fullmatch(pattern, url) and isinstance(launch_id, str)
+                    and _LAUNCH_ID.fullmatch(launch_id)):
                 return {"window_live": False, "launch_id": launch_id, "url": url}
             raise LauncherError(NOT_YOURS.format(port=self.port))
         raise LauncherError(_refusal(value, status))
@@ -430,7 +430,7 @@ def ensure_private_dirs(cache: Path, *names: str) -> None:
 
 
 def bootstrap_bytes(url: str) -> bytes:
-    if not _URL_CHARS.match(url) or not url.startswith("http://127.0.0.1:"):
+    if not _URL_CHARS.fullmatch(url) or not url.startswith("http://127.0.0.1:"):
         raise ValueError("unexpected launch URL")
     return BOOTSTRAP_TEMPLATE.format(url=url).encode("utf-8")
 
@@ -466,7 +466,7 @@ def sweep(cache: Path, *, older_than: float = SWEEP_AGE_SECONDS, now: float | No
     except OSError:
         return 0
     for name in names:
-        if not _BOOTSTRAP_NAME.match(name):
+        if not _BOOTSTRAP_NAME.fullmatch(name):
             continue
         path = folder / name
         try:
